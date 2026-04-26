@@ -67,17 +67,24 @@ Demonstrate a clean end-to-end workflow:
 3. score available plays against those tendencies
 4. return ranked recommendations
 
-## Defensive Tendency Data Model
+## Data Model
 
-The defensive data model is split into one raw tendencies file and several taxonomy files.
+The football data model is split into taxonomy files and raw football data files.
 
-- `data/raw/defensive_tendencies.csv` stores the actual opponent tendencies.
-- taxonomy CSV files in `data/taxonomy/` define the allowed IDs and the metadata behind those IDs.
-- `defensive_tendencies.csv` should reference taxonomy rows using IDs only.
-- `front_id` describes the defensive box/front structure.
-- `coverage_id` describes the pass coverage.
-- `defensive_personnel_id` describes who is on the field for the defense.
-- `offensive_formation_id` describes the offensive formation used as context.
+- taxonomy CSV files in `data/taxonomy/` define the allowed football vocabulary
+- `data/raw/defensive_tendencies.csv` stores opponent tendencies
+- `data/raw/playbook.csv` stores our offensive plays
+- `front_id`, `coverage_id`, `defensive_personnel_id`, and `formation_id` should reference taxonomy files
+- RT/LT should be represented by the `strength` column, not by creating separate formation IDs
+- `playbook.csv` uses semicolon-separated values for fields such as `beats_front` and `beats_coverage`
+- run validation with `python scripts/validate_data.py`
+
+Key taxonomy references:
+
+- `front_id` describes the defensive box/front structure
+- `coverage_id` describes the pass coverage
+- `defensive_personnel_id` describes who is on the field for the defense
+- `formation_id` describes the offensive formation context
 
 ## Development Roadmap
 

@@ -1,10 +1,14 @@
-formation_id,formation_name,formation_family,backfield,receiver_structure,spacing_tag,strength
-gun_trips,Gun Trips,gun,1rb,3x1,spread,right
-gun_doubles,Gun Doubles,gun,1rb,2x2,spread,balanced
-gun_bunch,Gun Bunch,gun,1rb,3x1,bunch,right
-gun_tight_trips,Gun Tight Trips,gun,1rb,3x1,compressed,right
-gun_empty,Empty,gun,empty,3x2,spread,balanced
-pistol_trips,Pistol Trips,pistol,1rb,3x1,spread,right
-under_i,I-Form,under_center,fullback,2x1,tight,balanced
-under_singleback,Singleback,under_center,1rb,2x2,balanced,balanced
-heavy_tight,Heavy Tight,under_center,2rb,heavy,tight,balanced
+formation_id,formation_name,formation_family,backfield,receiver_structure,spacing_tag,te_tag,formation_modifier,motion_modifier,strength
+gun_1rb_2x2_spread_no_te,DBLS,gun,1rb,2x2,spread,no_te,none,none,balanced
+gun_1rb_2x2_spread_te_off,DOT,gun,1rb,2x2,spread,te_off,none,none,balanced
+gun_1rb_2x2_spread_te_on,DEUCE,gun,1rb,2x2,spread,te_on,none,none,balanced
+gun_1rb_3x1_spread_y_middle,TANGO,gun,1rb,3x1,spread,y_middle,none,none,right
+gun_1rb_3x1_spread_no_te,TRIPS,gun,1rb,3x1,spread,no_te,none,none,right
+gun_1rb_3x1_spread_te_off,TOP,gun,1rb,3x1,spread,te_off,none,none,right
+gun_1rb_3x1_spread_te_on,TREY,gun,1rb,3x1,spread,te_on,none,none,right
+gun_1rb_2x2_spread_2te_off,DUFF,gun,1rb,2x2,spread,2te_off,none,none,balanced
+gun_1rb_2x2_spread_2te_on,DICE,gun,1rb,2x2,spread,2te_on,none,none,balanced
+gun_empty_3x2_spread_no_te,EMPTY,gun,empty,3x2,spread,no_te,none,none,balanced
+gun_empty_4x1_spread_no_te,QUADS,gun,empty,4x1,spread,no_te,none,none,right
+gun_1rb_3x1_spread_te_attached_away,FROG,gun,1rb,3x1,spread,te_attached_away,none,none,right
+gun_1rb_2x2_spread_wing,WING,gun,1rb,2x2,spread,wing,none,none,right
