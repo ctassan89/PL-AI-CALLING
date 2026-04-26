@@ -1,0 +1,14 @@
+coverage_id,coverage_name,base_coverage,coverage_family,safety_shell,coverage_type
+cover0,Cover 0,cover0,man,zero_high,pressure_man
+cover1,Cover 1,cover1,man,one_high,man
+cover1_robber,Cover 1 Robber,cover1,man,one_high,robber
+cover2,Cover 2,cover2,zone,two_high,spot_drop
+cover2_trap,Cover 2 Trap,cover2,zone,two_high,trap
+cover3,Cover 3,cover3,zone,one_high,spot_drop
+cover3_match,Cover 3 Match,cover3,match,one_high,match
+cover3_buzz,Cover 3 Buzz,cover3,zone,one_high,robber
+cover3_cloud,Cover 3 Cloud,cover3,zone,one_high,trap
+cover4_quarters,Quarters,cover4,match,two_high,match
+cover4_palms,Palms,cover4,match,two_high,match
+cover4_poach,Poach,cover4,match,two_high,robber
+cover6,Cover 6,cover6,hybrid,two_high,match

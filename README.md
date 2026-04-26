@@ -67,6 +67,18 @@ Demonstrate a clean end-to-end workflow:
 3. score available plays against those tendencies
 4. return ranked recommendations
 
+## Defensive Tendency Data Model
+
+The defensive data model is split into one raw tendencies file and several taxonomy files.
+
+- `data/raw/defensive_tendencies.csv` stores the actual opponent tendencies.
+- taxonomy CSV files in `data/taxonomy/` define the allowed IDs and the metadata behind those IDs.
+- `defensive_tendencies.csv` should reference taxonomy rows using IDs only.
+- `front_id` describes the defensive box/front structure.
+- `coverage_id` describes the pass coverage.
+- `defensive_personnel_id` describes who is on the field for the defense.
+- `offensive_formation_id` describes the offensive formation used as context.
+
 ## Development Roadmap
 
 ### Phase 0. Foundation

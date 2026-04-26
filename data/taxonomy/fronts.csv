@@ -1,0 +1,9 @@
+front_id,front_name,front_family,box_structure,dl_structure,lb_structure
+even_4,Even,even,4-2,even,over
+even_over,Over,even,4-2,over,over
+even_under,Under,even,4-2,under,under
+odd_3,Odd,odd,3-4,odd,stack
+odd_tite,Tite,odd,3-4,tite,tight_box
+odd_mint,Mint,odd,3-4,mint,wide
+bear,Bear,bear,5-0,bear,mug
+odd_5,Odd 5,hybrid,5-1,wide,walked_out

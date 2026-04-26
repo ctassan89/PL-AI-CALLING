@@ -1,0 +1,10 @@
+formation_id,formation_name,formation_family,backfield,receiver_structure,spacing_tag,strength
+gun_trips,Gun Trips,gun,1rb,3x1,spread,right
+gun_doubles,Gun Doubles,gun,1rb,2x2,spread,balanced
+gun_bunch,Gun Bunch,gun,1rb,3x1,bunch,right
+gun_tight_trips,Gun Tight Trips,gun,1rb,3x1,compressed,right
+gun_empty,Empty,gun,empty,3x2,spread,balanced
+pistol_trips,Pistol Trips,pistol,1rb,3x1,spread,right
+under_i,I-Form,under_center,fullback,2x1,tight,balanced
+under_singleback,Singleback,under_center,1rb,2x2,balanced,balanced
+heavy_tight,Heavy Tight,under_center,2rb,heavy,tight,balanced
