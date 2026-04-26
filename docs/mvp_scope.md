@@ -2,60 +2,75 @@
 
 ## MVP Definition
 
-The MVP is an offline play recommendation system for offensive football situations.
+The MVP is an offline, playbook-aware recommendation workflow.
 
-It accepts a structured description of a game situation and returns a ranked list of recommended plays or play types. The MVP is intended for early experimentation, evaluation, and iteration. It is not a live game system and it is not a complete football intelligence platform.
+It takes a coach's offensive playbook and a structured set of opponent defensive tendencies, then returns a ranked list of recommended plays from that same playbook. The MVP exists to validate the project structure, the football ontology, and the recommendation flow before any machine learning or product interfaces are introduced.
 
-## Core Inputs
+## Inputs
 
-The MVP should be designed around game-situation variables such as:
+### 1. `playbook.csv`
 
-- Down
-- Distance to first down
-- Field position
-- Yard line direction
-- Quarter
-- Time remaining
-- Score differential
-- Offensive personnel grouping
-- Hash or field-side context
+The offensive playbook input should contain, at minimum:
 
-These variables define the initial feature space for recommendation logic. The exact schema can be refined later.
+- custom play name
+- play type (`run` or `pass`)
+- concept or family label
+- optional tags such as formation, personnel, or notes
 
-## Output Format
+### 2. `opponent_tendencies.csv`
 
-The MVP output should be a ranked set of play suggestions.
+The opponent input should contain structured defensive tendencies, such as:
 
-Example structure:
+- coverage tendencies
+- front or box tendencies
+- pressure tendencies
+- situational notes tied to down and distance
+
+The exact column schema can evolve, but the MVP assumes the data is already available in CSV form.
+
+## Outputs
+
+The MVP output is a ranked list of recommended plays with brief explanations.
+
+Each recommendation should include:
+
+- rank
+- play name from the coach's playbook
+- concept/family
+- score or priority value
+- short explanation of why the play fits the opponent tendency
+
+Example:
 
 ```text
-1. Play: Inside Zone | Score: 0.81
-2. Play: Slant/Flat     | Score: 0.74
-3. Play: Play Action    | Score: 0.68
+1. Gun Doubles Rt 62 Mesh
+   Concept: Mesh
+   Score: 0.87
+   Why: Strong answer versus heavy man coverage tendency on 3rd-and-medium.
 ```
 
-At minimum, each recommendation should include:
+## MVP Behavior
 
-- Rank
-- Play name or play family
-- Associated score or confidence value
+The MVP should be able to:
 
-## Assumptions
+1. read the playbook CSV
+2. read the opponent tendencies CSV
+3. align play concepts to a shared ontology
+4. apply simple recommendation logic
+5. return ranked plays with explanation text
 
-- The user is evaluating one offensive decision at a time
-- Inputs are available in structured form
-- Early play outputs may be broad play families rather than full playbook-specific calls
-- Initial model quality will depend heavily on data design and labeling consistency
+## Not Included
 
-## Limitations
+The MVP explicitly does not include:
 
-- No reinforcement learning
-- No live in-game adaptation
-- No opponent-specific tactical engine
-- No direct integration with headset, sideline, or broadcast systems
-- No full playbook installation logic
-- No guarantee that recommendations are optimal in all contexts
+- machine learning models
+- reinforcement learning
+- real-time or in-game decision support
+- UI or dashboard work
+- API development
+- automated data collection pipelines
+- advanced simulation or opponent forecasting
 
-## MVP Boundary
+## Boundary
 
-If the system can take a game situation and return a short, ranked set of offensive play suggestions in a repeatable way, it satisfies the MVP definition.
+If the system can accept `playbook.csv` and `opponent_tendencies.csv` and produce a ranked, explainable list of plays from the coach's own playbook, the MVP is successful.

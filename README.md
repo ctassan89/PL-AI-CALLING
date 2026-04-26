@@ -1,78 +1,112 @@
 # PL-AI-CALLING
 
-PL-AI-CALLING is a long-term AI project focused on supporting offensive playcalling in American football. The objective is to build an assistant that helps an offensive coordinator evaluate a game situation and receive a small set of strong play recommendations.
+PL-AI-CALLING is a long-term decision-support project for American football offensive playcalling. The system is designed to ingest a coach's custom offensive playbook, translate those play names into a shared football concept layer, analyze opponent defensive tendencies, and recommend the best plays from that specific playbook for the situation at hand.
 
-## Goal
+This project is not a generic play prediction tool. It is a playbook-aware opponent tendency recommendation system built to help coaches make faster, more structured, and more explainable playcalling decisions.
 
-The system is intended to act as an AI assistant for offensive playcalling, not as a replacement for coaching judgment. It should take structured game-context inputs and return ranked play suggestions that can support faster and more consistent decision-making.
+## Project Description
 
-## Version 0.1 Scope
+The core problem is not simply predicting what play might work in the abstract. Coaches call from their own terminology, formations, tags, and constraints. A useful system must understand:
 
-Version 0.1 is focused only on play recommendation.
+- what plays exist in the coach's playbook
+- what those plays mean in football terms
+- how an opponent tends to defend different situations
+- which available plays best attack those tendencies
 
-Included in scope:
+The output is a ranked list of recommended plays from the coach's own playbook, along with brief reasoning tied to concept matchups and opponent behavior.
 
-- Structured representation of game situation inputs
-- A pipeline for generating ranked play recommendations
-- Offline experimentation and evaluation
-- Clear interfaces for future model and API integration
+## System Architecture
 
-Not included in scope:
+The project is organized around three primary components.
 
-- Full game intelligence
-- Real-time in-game adaptation
-- Reinforcement learning
-- Opponent simulation
-- Autonomous game management
+### 1. Playbook Layer
 
-## High-Level Roadmap
+Responsible for ingesting and structuring the offensive playbook.
 
-### Phase 0: Foundation
+- reads playbook data from coach-defined inputs
+- preserves custom naming and internal terminology
+- maps each play to a standardized football ontology
+- stores concept metadata such as play family, type, and tactical profile
 
-- Define project structure
-- Document the problem and MVP boundaries
-- Establish a scalable development workflow
+### 2. Opponent Modeling Layer
 
-### Phase 1: Data and Representation
+Responsible for representing how a defense behaves.
 
-- Define core football situation variables
-- Design play label taxonomy
-- Prepare datasets and data-processing conventions
+- ingests opponent tendency data
+- summarizes fronts, coverages, pressure habits, and situational patterns
+- normalizes defensive tendency inputs into a format the recommendation engine can use
 
-### Phase 2: Baseline Recommendation System
+### 3. Recommendation Engine
 
-- Build a first recommendation pipeline
-- Create simple evaluation metrics
-- Compare baseline model approaches
+Responsible for connecting the playbook to the opponent.
 
-### Phase 3: Internal Tools
+- compares play concepts against defensive tendencies
+- scores candidate plays from the available playbook
+- returns a ranked list of recommended plays with explanations
 
-- Add experiment tracking and model versioning
-- Introduce APIs for local usage
-- Improve testing and reproducibility
+## MVP
 
-### Phase 4: Product Layer
+The MVP is intentionally narrow and offline.
 
-- Build a web application or dashboard
-- Expose recommendations through a usable interface
-- Prepare for broader decision-support workflows
+### Input
 
-## Tech Stack Placeholder
+- `playbook.csv`: coach-defined offensive plays with concept labels
+- `opponent_tendencies.csv`: summarized defensive tendencies by situation or coverage tendency
 
-- Python for core development
-- Machine learning models for recommendation
-- Jupyter notebooks for exploration
-- API layer for future integration
-- Web app to be added later
+### Output
+
+- ranked recommended plays from the coach's playbook
+- short explanation for each recommendation, such as why the concept fits the opponent tendency
+
+### MVP Objective
+
+Demonstrate a clean end-to-end workflow:
+
+1. load a playbook
+2. load opponent tendency data
+3. score available plays against those tendencies
+4. return ranked recommendations
+
+## Development Roadmap
+
+### Phase 0. Foundation
+
+- finalize documentation and repo structure
+- define ontology and naming conventions
+- create clean package boundaries for future implementation
+
+### Phase 1. Playbook Modeling
+
+- define the playbook CSV schema
+- build play-to-concept mapping rules
+- validate custom naming against the internal ontology
+
+### Phase 2. Opponent Modeling
+
+- define the opponent tendencies CSV schema
+- encode coverage, front, pressure, and situational tendencies
+- build normalization and validation utilities
+
+### Phase 3. Baseline Recommendation Engine
+
+- implement rule-based scoring
+- rank plays from the available playbook
+- generate human-readable explanations for recommendations
+
+### Phase 4. Evaluation and Expansion
+
+- test recommendation quality against real scenarios
+- refine concept weights and matchup logic
+- prepare for future ML-assisted scoring and product interfaces
 
 ## Repository Layout
 
 ```text
-src/        Core application code
-data/       Datasets and data artifacts
-notebooks/  Research and exploration notebooks
-models/     Saved models and model-related assets
-api/        Future service layer and endpoints
-docs/       Project documentation
+src/        Core application packages
+data/       Input datasets and derived data artifacts
+docs/       Project documentation and design notes
+models/     Future model artifacts
+notebooks/  Exploration and research notebooks
 tests/      Automated tests
+api/        Future service layer, if needed later
 ```
