@@ -59,57 +59,6 @@ ALLOWED_PLAY_FAMILIES = {
     "trick",
 }
 ALLOWED_PLAY_TYPES = {"run", "pass", "rpo", "screen", "play_action", "boot", "trick"}
-ALLOWED_RUN_SCHEMES = {
-    "none",
-    "inside_zone",
-    "outside_zone",
-    "duo",
-    "power",
-    "counter",
-    "trap",
-    "iso",
-    "draw",
-    "qb_run",
-    "option",
-}
-ALLOWED_RUN_MODIFIERS = {
-    "none",
-    "sweep",
-    "toss",
-    "pin_pull",
-    "read",
-    "bash",
-    "split_zone",
-    "arc",
-}
-ALLOWED_PASS_CONCEPTS = {
-    "none",
-    "slant_flat",
-    "stick",
-    "spacing",
-    "mesh",
-    "drive",
-    "levels",
-    "curl_flat",
-    "smash",
-    "flood",
-    "dagger",
-    "mills",
-    "y_cross",
-    "four_verts",
-    "screens",
-    "wheel",
-    "choice",
-}
-ALLOWED_PASS_MODIFIERS = {
-    "none",
-    "switch",
-    "bunch",
-    "stack",
-    "motion",
-    "play_action",
-    "max_protect",
-}
 ALLOWED_RPO_TAGS = {
     "none",
     "bubble",
@@ -229,12 +178,51 @@ def add_blank_value_errors(
         errors.append(f"{column_name} contains blank values at CSV rows: {row_numbers}")
 
 
+def add_playbook_concept_pair_errors(
+    errors: list[str],
+    playbook: pd.DataFrame,
+    valid_run_pairs: set[tuple[str, str]],
+    valid_pass_pairs: set[tuple[str, str]],
+) -> None:
+    """Add validation errors for playbook run/pass concept pair consistency."""
+    for index, row in playbook.iterrows():
+        csv_row = index + 2
+        run_scheme = str(row["run_scheme"])
+        run_modifier = str(row["run_modifier"])
+        pass_concept = str(row["pass_concept"])
+        pass_modifier = str(row["pass_modifier"])
+
+        if run_scheme == "none":
+            if run_modifier != "none":
+                errors.append(
+                    f"playbook row {csv_row}: run_modifier must be 'none' when run_scheme is 'none'."
+                )
+        elif (run_scheme, run_modifier) not in valid_run_pairs:
+            errors.append(
+                f"playbook row {csv_row}: invalid run pair "
+                f"({run_scheme}, {run_modifier}) not found in run_game.csv."
+            )
+
+        if pass_concept == "none":
+            if pass_modifier != "none":
+                errors.append(
+                    f"playbook row {csv_row}: pass_modifier must be 'none' when pass_concept is 'none'."
+                )
+        elif (pass_concept, pass_modifier) not in valid_pass_pairs:
+            errors.append(
+                f"playbook row {csv_row}: invalid pass pair "
+                f"({pass_concept}, {pass_modifier}) not found in pass_game.csv."
+            )
+
+
 def main() -> None:
     """Run validation checks for defensive tendency input data."""
     fronts = load_csv(TAXONOMY_DIR / "fronts.csv")
     coverages = load_csv(TAXONOMY_DIR / "coverages.csv")
     defensive_personnel = load_csv(TAXONOMY_DIR / "defensive_personnel.csv")
     offensive_formations = load_csv(TAXONOMY_DIR / "offensive_formations.csv")
+    run_game = load_csv(TAXONOMY_DIR / "run_game.csv")
+    pass_game = load_csv(TAXONOMY_DIR / "pass_game.csv")
     defensive_tendencies = load_csv(RAW_DIR / "defensive_tendencies.csv")
     playbook = load_csv(RAW_DIR / "playbook.csv")
 
@@ -242,6 +230,18 @@ def main() -> None:
     front_ids = set(fronts["front_id"].dropna().astype(str))
     coverage_ids = set(coverages["coverage_id"].dropna().astype(str))
     formation_ids = set(offensive_formations["formation_id"].dropna().astype(str))
+    allowed_run_schemes = {"none"} | set(run_game["run_scheme"].dropna().astype(str))
+    allowed_run_modifiers = {"none"} | set(run_game["run_modifier"].dropna().astype(str))
+    allowed_pass_concepts = {"none"} | set(pass_game["pass_concept"].dropna().astype(str))
+    allowed_pass_modifiers = {"none"} | set(pass_game["pass_modifier"].dropna().astype(str))
+    valid_run_pairs = {
+        (str(run_scheme), str(run_modifier))
+        for run_scheme, run_modifier in run_game[["run_scheme", "run_modifier"]].itertuples(index=False, name=None)
+    }
+    valid_pass_pairs = {
+        (str(pass_concept), str(pass_modifier))
+        for pass_concept, pass_modifier in pass_game[["pass_concept", "pass_modifier"]].itertuples(index=False, name=None)
+    }
 
     add_invalid_value_errors(
         errors, offensive_formations, "formation_family", ALLOWED_FORMATION_FAMILIES
@@ -337,10 +337,10 @@ def main() -> None:
     )
     add_invalid_value_errors(errors, playbook, "play_family", ALLOWED_PLAY_FAMILIES)
     add_invalid_value_errors(errors, playbook, "play_type", ALLOWED_PLAY_TYPES)
-    add_invalid_value_errors(errors, playbook, "run_scheme", ALLOWED_RUN_SCHEMES)
-    add_invalid_value_errors(errors, playbook, "run_modifier", ALLOWED_RUN_MODIFIERS)
-    add_invalid_value_errors(errors, playbook, "pass_concept", ALLOWED_PASS_CONCEPTS)
-    add_invalid_value_errors(errors, playbook, "pass_modifier", ALLOWED_PASS_MODIFIERS)
+    add_invalid_value_errors(errors, playbook, "run_scheme", allowed_run_schemes)
+    add_invalid_value_errors(errors, playbook, "run_modifier", allowed_run_modifiers)
+    add_invalid_value_errors(errors, playbook, "pass_concept", allowed_pass_concepts)
+    add_invalid_value_errors(errors, playbook, "pass_modifier", allowed_pass_modifiers)
     add_invalid_value_errors(errors, playbook, "rpo_tag", ALLOWED_RPO_TAGS)
     add_invalid_value_errors(errors, playbook, "play_action", ALLOWED_PLAY_ACTION)
     add_invalid_value_errors(
@@ -370,6 +370,12 @@ def main() -> None:
         playbook,
         "beats_coverage",
         coverage_ids | {"any", "none"},
+    )
+    add_playbook_concept_pair_errors(
+        errors,
+        playbook,
+        valid_run_pairs,
+        valid_pass_pairs,
     )
 
     if errors:
