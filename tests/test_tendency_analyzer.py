@@ -133,6 +133,9 @@ class OpponentTendencyTests(unittest.TestCase):
             <= set(tendencies.columns)
         )
         self.assertEqual(tendencies.loc[0, "opponent"], "rhinos")
+        self.assertEqual(tendencies.loc[0, "pressure"], "no")
+        self.assertEqual(tendencies.loc[1, "pressure"], "yes")
+        self.assertEqual(tendencies.loc[8, "distance_bucket"], "very_long")
 
     def test_analyzer_returns_expected_probabilities_for_exact_situation(self) -> None:
         analyzer = OpponentTendencyAnalyzer.from_csv(SAMPLE_TENDENCIES_PATH)

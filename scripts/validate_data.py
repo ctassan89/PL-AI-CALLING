@@ -103,11 +103,65 @@ ALLOWED_PREFERRED_FIELD_ZONE = {
     "goal_line",
     "any",
 }
+REQUIRED_DEFENSIVE_TENDENCY_COLUMNS = {
+    "team",
+    "game_id",
+    "down",
+    "distance",
+    "field_zone",
+    "hash",
+    "offensive_personnel",
+    "offensive_formation_id",
+    "defensive_personnel_id",
+    "front_id",
+    "box_count",
+    "coverage_id",
+    "blitzers",
+    "movement_type",
+    "sample_size",
+    "frequency",
+    "success_rate_allowed",
+    "epa_allowed",
+    "notes",
+}
+REQUIRED_PLAYBOOK_COLUMNS = {
+    "play_id",
+    "play_name",
+    "play_family",
+    "play_type",
+    "run_scheme",
+    "run_modifier",
+    "pass_concept",
+    "pass_modifier",
+    "rpo_tag",
+    "play_action",
+    "formation_id",
+    "personnel",
+    "beats_front",
+    "beats_coverage",
+    "beats_box",
+    "preferred_down_distance",
+    "preferred_field_zone",
+}
 
 
 def load_csv(path: Path) -> pd.DataFrame:
     """Load a CSV file from disk."""
     return pd.read_csv(path)
+
+
+def add_missing_column_errors(
+    errors: list[str],
+    df: pd.DataFrame,
+    required_columns: set[str],
+    dataset_name: str,
+) -> None:
+    """Add validation errors for required columns missing from a dataset."""
+    missing = sorted(required_columns - set(df.columns))
+    if missing:
+        errors.append(
+            f"{dataset_name} is missing required columns: " + ", ".join(missing)
+        )
 
 
 def add_missing_id_errors(
@@ -245,9 +299,28 @@ def main() -> None:
     pass_game = load_csv(TAXONOMY_DIR / "pass_game.csv")
     defensive_tendencies = load_csv(RAW_DIR / "defensive_tendencies.csv")
     playbook = load_csv(RAW_DIR / "playbook.csv")
-    playbook["play_action"] = playbook["play_action"].astype(str).str.lower()
 
     errors: list[str] = []
+    add_missing_column_errors(
+        errors,
+        defensive_tendencies,
+        REQUIRED_DEFENSIVE_TENDENCY_COLUMNS,
+        "defensive_tendencies.csv",
+    )
+    add_missing_column_errors(
+        errors,
+        playbook,
+        REQUIRED_PLAYBOOK_COLUMNS,
+        "playbook.csv",
+    )
+    if errors:
+        print("Data validation failed:")
+        for error in errors:
+            print(f"- {error}")
+        raise SystemExit(1)
+
+    playbook["play_action"] = playbook["play_action"].astype(str).str.lower()
+
     front_ids = set(fronts["front_id"].dropna().astype(str))
     coverage_ids = set(coverages["coverage_id"].dropna().astype(str))
     formation_ids = set(offensive_formations["formation_id"].dropna().astype(str))
