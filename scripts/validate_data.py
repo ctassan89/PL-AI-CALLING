@@ -225,6 +225,7 @@ def main() -> None:
     pass_game = load_csv(TAXONOMY_DIR / "pass_game.csv")
     defensive_tendencies = load_csv(RAW_DIR / "defensive_tendencies.csv")
     playbook = load_csv(RAW_DIR / "playbook.csv")
+    playbook["play_action"] = playbook["play_action"].astype(str).str.lower()
 
     errors: list[str] = []
     front_ids = set(fronts["front_id"].dropna().astype(str))
@@ -233,7 +234,10 @@ def main() -> None:
     allowed_run_schemes = {"none"} | set(run_game["run_scheme"].dropna().astype(str))
     allowed_run_modifiers = {"none"} | set(run_game["run_modifier"].dropna().astype(str))
     allowed_pass_concepts = {"none"} | set(pass_game["pass_concept"].dropna().astype(str))
-    allowed_pass_modifiers = {"none"} | set(pass_game["pass_modifier"].dropna().astype(str))
+    allowed_pass_modifiers = (
+        {"none"}
+        | (set(pass_game["pass_modifier"].dropna().astype(str)) - {"play_action"})
+    )
     valid_run_pairs = {
         (str(run_scheme), str(run_modifier))
         for run_scheme, run_modifier in run_game[["run_scheme", "run_modifier"]].itertuples(index=False, name=None)
