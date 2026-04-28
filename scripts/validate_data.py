@@ -74,6 +74,26 @@ ALLOWED_PLAY_ACTION = {"true", "false"}
 ALLOWED_PERSONNEL = {"10", "11", "12", "13", "20", "21", "22", "empty"}
 ALLOWED_BEATS_BOX = {"light_box", "neutral_box", "heavy_box", "loaded_box", "any", "none"}
 ALLOWED_PREFERRED_DOWN_DISTANCE = {"short", "medium", "long", "xlong", "any"}
+ALLOWED_PLAY_TAGS = {
+    "pure_run",
+    "inside_run",
+    "outside_run",
+    "short_yardage",
+    "draw",
+    "safe_call",
+    "screen",
+    "quick_game",
+    "rpo",
+    "play_action",
+    "boot",
+    "shot",
+    "vertical",
+    "attacks_sticks",
+    "slow_developing",
+    "pressure_answer",
+    "red_zone",
+    "goal_line",
+}
 ALLOWED_PREFERRED_FIELD_ZONE = {
     "own_redzone",
     "own_territory",
@@ -375,6 +395,8 @@ def main() -> None:
         "beats_coverage",
         coverage_ids | {"any", "none"},
     )
+    if "tags" in playbook.columns:
+        add_invalid_semicolon_value_errors(errors, playbook, "tags", ALLOWED_PLAY_TAGS)
     add_playbook_concept_pair_errors(
         errors,
         playbook,

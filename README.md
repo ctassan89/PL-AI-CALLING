@@ -131,6 +131,107 @@ tests/      Automated tests
 api/        Future service layer, if needed later
 ```
 
+## Scoring Philosophy
+
+The recommendation engine is now situation-first.
+
+- down and distance are the strongest scoring inputs
+- territory is the next major football constraint
+- defensive matchup data such as coverage, front, and box count are secondary adjustments
+- opponent tendencies are applied after the base situation score
+- explicit guardrail penalties prevent obviously bad top calls such as a pure run on `3rd/4th & very long` when viable pass answers exist
+
+In practice this means:
+
+- a light box can help Inside Zone on `1st & 10` or `2nd & medium`
+- that same light box cannot rescue Inside Zone on `3rd & 15`
+- pressure can move screens, quick game, and RPOs upward
+- likely coverage can separate two otherwise sensible pass calls
+
+## Down And Distance Buckets
+
+The engine accepts either legacy bucket strings or numeric yards-to-go and normalizes them into:
+
+- down buckets: `early_down`, `money_down`
+- distance buckets: `short` (`1-2`), `medium` (`3-6`), `long` (`7-10`), `very_long` (`11+`)
+
+Combined situation buckets:
+
+- `1st & 10`
+- `2nd & short`
+- `2nd & medium`
+- `2nd & long`
+- `2nd & very long`
+- `3rd/4th & short`
+- `3rd/4th & medium`
+- `3rd/4th & long`
+- `3rd/4th & very long`
+
+Situational examples:
+
+- `3rd/4th & long` and `3rd/4th & very long` strongly favor concepts that attack the sticks, screens, and other credible conversion answers
+- pure runs receive strong penalties in those situations unless they are specially tagged such as `draw` or `safe_call`
+- `2nd & short` allows more aggressive play-action and shot behavior
+- `3rd/4th & short` boosts short-yardage runs, quick game, and RPOs
+
+## Field Position Buckets
+
+The current CLI still accepts the project field-zone strings, but the scoring logic maps them into explicit territory buckets:
+
+- `own_redzone` -> `backed_up`
+- `own_territory` -> `own_side`
+- `midfield` -> `midfield`
+- `opp_territory` -> `plus_territory`
+- `redzone` -> `red_zone`
+- `goal_line` -> `goal_line`
+
+Territory behavior:
+
+- `backed_up` boosts safe calls, quick game, screens, and field-position-safe runs
+- `plus_territory` allows somewhat more aggression
+- `red_zone` boosts condensed-space calls and penalizes concepts that need deep vertical spacing
+- `goal_line` strongly favors goal-line tags, inside runs, quick hitters, and condensed play-action
+
+## Play Tags
+
+The sample `playbook.csv` now includes a backward-compatible optional `tags` column.
+
+Example tags:
+
+- `pure_run`
+- `inside_run`
+- `short_yardage`
+- `draw`
+- `safe_call`
+- `screen`
+- `quick_game`
+- `rpo`
+- `play_action`
+- `boot`
+- `shot`
+- `vertical`
+- `attacks_sticks`
+- `slow_developing`
+- `pressure_answer`
+- `red_zone`
+- `goal_line`
+
+Example rows:
+
+```csv
+inside_zone_trips,...,tags
+inside_zone_trips,...,"pure_run;inside_run;safe_call"
+slant_flat,...,"quick_game;pressure_answer;safe_call;red_zone;goal_line"
+four_verts_switch,...,"shot;vertical;slow_developing;attacks_sticks"
+```
+
+These tags let the engine distinguish between:
+
+- a pure run and a draw
+- a quick answer and a slow-developing dropback
+- a general pass and a concept that attacks the sticks
+- a normal field call and a red-zone or goal-line-specific call
+
 ## Opponent Tendency CSV Format
 
 The sample tendency analyzer expects `data/opponent_tendencies.csv` to include these columns:
@@ -192,21 +293,20 @@ Example output:
 
 ## Tendency-Adjusted Recommendations
 
-Base recommendations still use the original rule weights:
+The engine now layers scoring in this order:
 
-- front match: `+3`
-- coverage match: `+3`
-- box match: `+2`
-- formation match: `+2`
-- distance match: `+1`
-- field zone match: `+1`
+1. situation score from down, distance, and territory
+2. secondary matchup score from coverage, front, box, formation, and playbook preferences
+3. tendency adjustments from likely coverage, pressure, and box count
+4. explicit guardrail penalties for unrealistic top-call candidates
 
-When opponent tendencies are provided, the engine adds small score adjustments on top of the base score instead of replacing it:
+Representative scoring behavior:
 
-- likely coverages boost plays tagged to beat those coverages
-- likely pressure boosts quick game, screens, and RPO/hot-answer plays
-- likely heavy boxes slightly reduce pure runs and slightly boost pass/RPO answers
-- likely light boxes give pure runs a modest bump
+- `3rd/4th & very long` gives large positive value to `attacks_sticks`, `screen`, and credible conversion answers
+- pure runs on `3rd/4th & very long` take a near-disqualifying penalty before any tendency adjustments are applied
+- high pressure boosts `pressure_answer` tags and penalizes `slow_developing` passes
+- high light-box probability can help a viable run, but not enough to erase the money-down run penalty
+- high heavy-box probability slightly reduces pure runs and slightly boosts pass/RPO answers
 
 The CLI can now use the optional tendency file when an opponent is supplied:
 
@@ -221,4 +321,30 @@ python scripts/suggest_play.py \
   --box-count 7 \
   --personnel 11 \
   --opponent rhinos
+```
+
+CLI output includes:
+
+- final score
+- an explainable score breakdown with signed reasons
+- whether opponent tendencies were used
+
+Example recommendation reasoning:
+
+```text
+1. Flood — score 8.5
+   Reasons:
+   +5.5 situation fit: 3rd/4th & very long favors pass concepts attacking the sticks
+   +2.5 coverage fit: strong versus cover3
+   -1.8 pressure risk: long-developing concept against likely pressure
+```
+
+Example bad recommendation explanation:
+
+```text
+Inside Zone — score -7.0
+Reasons:
+-13.0 situation penalty: pure run on 3rd/4th & very long is near-disqualifying
++1.5 box fit: favorable into light_box
++1.0 formation fit: call is available from the formation
 ```

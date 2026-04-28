@@ -76,6 +76,7 @@ def main() -> None:
     top_plays = recommend_plays(playbook, situation, tendencies=tendencies, limit=3)
 
     print("Top 3 recommended plays:\n")
+    print(f"Opponent tendencies used: {'yes' if tendencies else 'no'}\n")
     for rank, play in enumerate(top_plays, start=1):
         print(
             f"{rank}. {play['play_name']} ({play['play_id']}) — score: {play['score']:.2f}"

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import unittest
 import sys
+import unittest
 from pathlib import Path
 
 import pandas as pd
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
@@ -17,11 +18,12 @@ if str(SRC_DIR) not in sys.path:
 from opponent.tendencies import OpponentTendencyAnalyzer, load_opponent_tendencies
 from recommendation.engine import build_situation, recommend_plays
 
+
 SAMPLE_TENDENCIES_PATH = PROJECT_ROOT / "data" / "opponent_tendencies.csv"
 
 
 def make_playbook() -> pd.DataFrame:
-    """Build a small playbook that can shift with opponent tendencies."""
+    """Build a small playbook that can react to opponent tendencies."""
     return pd.DataFrame(
         [
             {
@@ -42,6 +44,7 @@ def make_playbook() -> pd.DataFrame:
                 "beats_box": "light_box;neutral_box",
                 "preferred_down_distance": "short;medium",
                 "preferred_field_zone": "midfield",
+                "tags": "pure_run;inside_run",
             },
             {
                 "play_id": "flood",
@@ -59,8 +62,9 @@ def make_playbook() -> pd.DataFrame:
                 "beats_front": "odd_tite",
                 "beats_coverage": "cover3",
                 "beats_box": "heavy_box",
-                "preferred_down_distance": "short;medium",
-                "preferred_field_zone": "midfield",
+                "preferred_down_distance": "short;medium;long;xlong",
+                "preferred_field_zone": "midfield;opp_territory",
+                "tags": "play_action;boot;attacks_sticks",
             },
             {
                 "play_id": "screen",
@@ -78,15 +82,36 @@ def make_playbook() -> pd.DataFrame:
                 "beats_front": "none",
                 "beats_coverage": "cover3",
                 "beats_box": "any",
-                "preferred_down_distance": "short;medium",
-                "preferred_field_zone": "midfield",
+                "preferred_down_distance": "medium;long;xlong",
+                "preferred_field_zone": "any",
+                "tags": "screen;pressure_answer;safe_call",
+            },
+            {
+                "play_id": "verts",
+                "play_name": "Four Verts",
+                "play_family": "dropback",
+                "play_type": "pass",
+                "run_scheme": "none",
+                "run_modifier": "none",
+                "pass_concept": "four_verts",
+                "pass_modifier": "none",
+                "rpo_tag": "none",
+                "play_action": "false",
+                "formation_id": "gun_11_2x2",
+                "personnel": "11",
+                "beats_front": "none",
+                "beats_coverage": "cover3;cover4_quarters",
+                "beats_box": "any",
+                "preferred_down_distance": "long;xlong",
+                "preferred_field_zone": "midfield;opp_territory",
+                "tags": "shot;vertical;slow_developing;attacks_sticks",
             },
         ]
     )
 
 
 class OpponentTendencyTests(unittest.TestCase):
-    """Validate CSV loading, aggregation, and score adjustment integration."""
+    """Validate CSV loading, aggregation, and logical tendency integration."""
 
     def test_load_opponent_tendencies_normalizes_required_columns(self) -> None:
         tendencies = load_opponent_tendencies(SAMPLE_TENDENCIES_PATH)
@@ -111,7 +136,6 @@ class OpponentTendencyTests(unittest.TestCase):
 
     def test_analyzer_returns_expected_probabilities_for_exact_situation(self) -> None:
         analyzer = OpponentTendencyAnalyzer.from_csv(SAMPLE_TENDENCIES_PATH)
-
         result = analyzer.lookup(
             {
                 "opponent": "rhinos",
@@ -128,13 +152,11 @@ class OpponentTendencyTests(unittest.TestCase):
         self.assertAlmostEqual(result["box_count"]["8"], 2 / 3)
         self.assertEqual(result["def_front"]["odd_tite"], 1.0)
 
-    def test_tendency_adjusted_recommendations_change_same_situation_ranking(
-        self,
-    ) -> None:
+    def test_same_situation_changes_ranking_when_tendencies_are_added(self) -> None:
         playbook = make_playbook()
         situation = build_situation(
             down=2,
-            distance="short",
+            distance=2,
             field_zone="midfield",
             formation_id="gun_11_2x2",
             front_id="odd_tite",
@@ -144,8 +166,7 @@ class OpponentTendencyTests(unittest.TestCase):
             personnel="11",
         )
 
-        base = recommend_plays(playbook, situation, limit=3)
-
+        base = recommend_plays(playbook, situation, limit=4)
         analyzer = OpponentTendencyAnalyzer.from_csv(SAMPLE_TENDENCIES_PATH)
         tendencies = analyzer.lookup(
             {
@@ -156,11 +177,46 @@ class OpponentTendencyTests(unittest.TestCase):
                 "personnel": "11",
             }
         )
-        adjusted = recommend_plays(playbook, situation, tendencies=tendencies, limit=3)
+        adjusted = recommend_plays(playbook, situation, tendencies=tendencies, limit=4)
 
-        self.assertEqual(base[0]["play_id"], "inside_zone")
-        self.assertNotEqual(adjusted[0]["play_id"], base[0]["play_id"])
+        self.assertNotEqual(base[0]["play_id"], adjusted[0]["play_id"])
         self.assertIn(adjusted[0]["play_id"], {"flood", "screen"})
+
+    def test_tendencies_cannot_make_inside_zone_top_call_on_third_and_fifteen(self) -> None:
+        playbook = make_playbook()
+        situation = build_situation(
+            down=3,
+            distance=15,
+            field_zone="midfield",
+            formation_id="gun_11_2x2",
+            front_id="even_over",
+            coverage_id="cover3",
+            box_count=5,
+            opponent="rhinos",
+            personnel="11",
+        )
+        analyzer = OpponentTendencyAnalyzer.from_csv(SAMPLE_TENDENCIES_PATH)
+        tendencies = analyzer.lookup(
+            {
+                "opponent": "rhinos",
+                "down": 3,
+                "distance_bucket": "very_long",
+                "field_zone": "midfield",
+                "personnel": "11",
+            }
+        )
+        recommendations = recommend_plays(
+            playbook, situation, tendencies=tendencies, limit=4
+        )
+
+        top_ids = [play["play_id"] for play in recommendations[:3]]
+        inside_zone = next(play for play in recommendations if play["play_id"] == "inside_zone")
+
+        self.assertNotIn("inside_zone", top_ids)
+        self.assertLess(inside_zone["score"], 0)
+        self.assertTrue(
+            any("guardrail" in reason or "pure run on 3rd/4th & very long" in reason for reason in inside_zone["reasons"])
+        )
 
 
 if __name__ == "__main__":

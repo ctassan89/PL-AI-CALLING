@@ -8,6 +8,9 @@ rhinos,2,short,midfield,11,odd_tite,8,cover1,yes,rpo_gain
 rhinos,3,long,midfield,10,even_over,6,cover2_trap,yes,sack
 rhinos,3,long,midfield,10,even_over,6,cover2_trap,yes,checkdown
 rhinos,3,long,midfield,10,odd_mint,5,cover4_quarters,no,draw
+rhinos,3,very_long,midfield,11,even_over,5,cover3,yes,screen_allowed
+rhinos,3,very_long,midfield,11,even_over,5,cover3,yes,hurry
+rhinos,3,very_long,midfield,11,odd_mint,6,cover4_quarters,no,checkdown
 falcons,1,short,midfield,12,odd_3,5,cover4_quarters,no,run_fit
 falcons,1,short,midfield,12,odd_3,5,cover4_quarters,no,run_fit
 falcons,1,short,midfield,12,even_4,6,cover3,no,play_action_gain
