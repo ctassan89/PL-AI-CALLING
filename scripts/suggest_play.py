@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 import pandas as pd
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 PLAYBOOK_PATH = BASE_DIR / "data" / "raw" / "playbook.csv"
+DEFAULT_TENDENCIES_PATH = BASE_DIR / "data" / "opponent_tendencies.csv"
+
+if str(BASE_DIR / "src") not in sys.path:
+    sys.path.insert(0, str(BASE_DIR / "src"))
+
+from opponent.tendencies import OpponentTendencyAnalyzer
+from recommendation.engine import build_situation, recommend_plays
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,69 +32,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--front-id", required=True, dest="front_id")
     parser.add_argument("--coverage-id", required=True, dest="coverage_id")
     parser.add_argument("--box-count", type=int, required=True, dest="box_count")
+    parser.add_argument("--personnel")
+    parser.add_argument("--opponent")
+    parser.add_argument(
+        "--opponent-tendencies-path",
+        default=str(DEFAULT_TENDENCIES_PATH),
+        dest="opponent_tendencies_path",
+    )
     return parser.parse_args()
-
-
-def parse_list(value: object) -> list[str]:
-    """Split a semicolon-separated field into normalized values."""
-    return [item.strip() for item in str(value).split(";") if item.strip()]
-
-
-def map_box_count(box_count: int) -> str:
-    """Map a numeric box count to a categorical box label."""
-    if box_count <= 5:
-        return "light_box"
-    if box_count == 6:
-        return "neutral_box"
-    if box_count == 7:
-        return "heavy_box"
-    return "loaded_box"
-
-
-def matches_category(play_values: list[str], target_value: str) -> bool:
-    """Return whether a category matches, respecting any/none rules."""
-    if "any" in play_values:
-        return True
-    if "none" in play_values:
-        return False
-    return target_value in play_values
-
-
-def score_play(play: pd.Series, situation: dict[str, str]) -> tuple[int, list[str]]:
-    """Score a play against the current situation and collect match reasons."""
-    score = 0
-    reasons: list[str] = []
-
-    front_values = parse_list(play["beats_front"])
-    if matches_category(front_values, situation["front_id"]):
-        score += 3
-        reasons.append(f"front match: {situation['front_id']}")
-
-    coverage_values = parse_list(play["beats_coverage"])
-    if matches_category(coverage_values, situation["coverage_id"]):
-        score += 3
-        reasons.append(f"coverage match: {situation['coverage_id']}")
-
-    box_values = parse_list(play["beats_box"])
-    if matches_category(box_values, situation["box_label"]):
-        score += 2
-        reasons.append(f"box match: {situation['box_label']}")
-
-    if str(play["formation_id"]) == situation["formation_id"]:
-        score += 2
-        reasons.append(f"formation match: {situation['formation_id']}")
-
-    distance_values = parse_list(play["preferred_down_distance"])
-    if matches_category(distance_values, situation["distance"]):
-        score += 1
-        reasons.append(f"distance match: {situation['distance']}")
-
-    field_zone_values = parse_list(play["preferred_field_zone"])
-    if matches_category(field_zone_values, situation["field_zone"]):
-        score += 1
-        reasons.append(f"field zone match: {situation['field_zone']}")
-
-    return score, reasons
 
 
 def main() -> None:
@@ -94,37 +47,38 @@ def main() -> None:
     args = parse_args()
     playbook = pd.read_csv(PLAYBOOK_PATH)
 
-    situation = {
-        "down": str(args.down),
-        "distance": args.distance,
-        "field_zone": args.field_zone,
-        "formation_id": args.formation_id,
-        "front_id": args.front_id,
-        "coverage_id": args.coverage_id,
-        "box_label": map_box_count(args.box_count),
-    }
+    situation = build_situation(
+        down=args.down,
+        distance=args.distance,
+        field_zone=args.field_zone,
+        formation_id=args.formation_id,
+        front_id=args.front_id,
+        coverage_id=args.coverage_id,
+        box_count=args.box_count,
+        personnel=args.personnel,
+        opponent=args.opponent,
+    )
 
-    recommendations: list[dict[str, object]] = []
-    for _, play in playbook.iterrows():
-        score, reasons = score_play(play, situation)
-        recommendations.append(
+    tendencies = None
+    tendencies_path = Path(args.opponent_tendencies_path)
+    if args.opponent and tendencies_path.exists():
+        analyzer = OpponentTendencyAnalyzer.from_csv(tendencies_path)
+        tendencies = analyzer.lookup(
             {
-                "play_name": str(play["play_name"]),
-                "play_id": str(play["play_id"]),
-                "score": score,
-                "reasons": reasons,
+                "opponent": args.opponent,
+                "down": args.down,
+                "distance_bucket": args.distance,
+                "field_zone": args.field_zone,
+                "personnel": args.personnel or "",
             }
         )
 
-    top_plays = sorted(
-        recommendations,
-        key=lambda play: (-int(play["score"]), str(play["play_name"]), str(play["play_id"])),
-    )[:3]
+    top_plays = recommend_plays(playbook, situation, tendencies=tendencies, limit=3)
 
     print("Top 3 recommended plays:\n")
     for rank, play in enumerate(top_plays, start=1):
         print(
-            f"{rank}. {play['play_name']} ({play['play_id']}) — score: {play['score']}"
+            f"{rank}. {play['play_name']} ({play['play_id']}) — score: {play['score']:.2f}"
         )
         print("   Reasons:")
         if play["reasons"]:

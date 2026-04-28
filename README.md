@@ -74,6 +74,7 @@ The football data model is split into taxonomy files and raw football data files
 - taxonomy CSV files in `data/taxonomy/` define the allowed football vocabulary
 - `data/raw/defensive_tendencies.csv` stores opponent tendencies
 - `data/raw/playbook.csv` stores our offensive plays
+- `data/opponent_tendencies.csv` is a sample situation-based opponent tendency file for the analyzer
 - `front_id`, `coverage_id`, `defensive_personnel_id`, and `formation_id` should reference taxonomy files
 - RT/LT should be represented by the `strength` column, not by creating separate formation IDs
 - `playbook.csv` uses semicolon-separated values for fields such as `beats_front` and `beats_coverage`
@@ -128,4 +129,96 @@ models/     Future model artifacts
 notebooks/  Exploration and research notebooks
 tests/      Automated tests
 api/        Future service layer, if needed later
+```
+
+## Opponent Tendency CSV Format
+
+The sample tendency analyzer expects `data/opponent_tendencies.csv` to include these columns:
+
+- `opponent`
+- `down`
+- `distance_bucket`
+- `field_zone`
+- `personnel`
+- `def_front`
+- `box_count`
+- `coverage`
+- `pressure`
+- `play_result`
+
+Example row:
+
+```csv
+opponent,down,distance_bucket,field_zone,personnel,def_front,box_count,coverage,pressure,play_result
+rhinos,2,short,midfield,11,odd_tite,8,cover3,yes,screen_allowed
+```
+
+Notes:
+
+- `coverage` should use the same coverage IDs as `data/taxonomy/coverages.csv`
+- `def_front` should use the same front IDs as `data/taxonomy/fronts.csv`
+- `box_count` stays numeric in the CSV and is translated into `light_box`, `neutral_box`, `heavy_box`, or `loaded_box` inside the recommendation engine
+- `pressure` is expected as `yes` or `no`
+
+## Tendency Analyzer Usage
+
+The analyzer groups rows by the most specific available situation bucket and returns defensive frequencies as probabilities.
+
+```python
+from opponent.tendencies import OpponentTendencyAnalyzer
+
+analyzer = OpponentTendencyAnalyzer.from_csv("data/opponent_tendencies.csv")
+tendencies = analyzer.lookup(
+    {
+        "opponent": "rhinos",
+        "down": 2,
+        "distance_bucket": "short",
+        "field_zone": "midfield",
+        "personnel": "11",
+    }
+)
+```
+
+Example output:
+
+```python
+{
+    "coverage": {"cover3": 0.67, "cover1": 0.33},
+    "pressure": {"yes": 1.0},
+    "box_count": {"8": 0.67, "7": 0.33},
+    "def_front": {"odd_tite": 1.0},
+}
+```
+
+## Tendency-Adjusted Recommendations
+
+Base recommendations still use the original rule weights:
+
+- front match: `+3`
+- coverage match: `+3`
+- box match: `+2`
+- formation match: `+2`
+- distance match: `+1`
+- field zone match: `+1`
+
+When opponent tendencies are provided, the engine adds small score adjustments on top of the base score instead of replacing it:
+
+- likely coverages boost plays tagged to beat those coverages
+- likely pressure boosts quick game, screens, and RPO/hot-answer plays
+- likely heavy boxes slightly reduce pure runs and slightly boost pass/RPO answers
+- likely light boxes give pure runs a modest bump
+
+The CLI can now use the optional tendency file when an opponent is supplied:
+
+```bash
+python scripts/suggest_play.py \
+  --down 2 \
+  --distance short \
+  --field-zone midfield \
+  --formation-id gun_1rb_3x1_spread_no_te \
+  --front-id odd_tite \
+  --coverage-id cover3 \
+  --box-count 7 \
+  --personnel 11 \
+  --opponent rhinos
 ```
