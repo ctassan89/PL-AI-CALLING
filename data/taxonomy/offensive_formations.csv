@@ -13,3 +13,7 @@ gun_empty_4x1_spread_no_te,QUADS,gun,empty,4x1,spread,no_te,none,none,right
 gun_1rb_3x1_spread_te_attached_away,FROG,gun,1rb,3x1,spread,te_attached_away,none,none,right
 gun_1rb_2x2_spread_wing,WING,gun,1rb,2x2,spread,wing,none,none,right
 gun_1rb_3x1_bunch_te_on,3x1 Bunch TE On,gun,1rb,3x1,bunch,te_on,none,none,trips
+gun_empty,EMPTY,gun,empty,3x2,spread,no_te,none,none,balanced
+gun_1rb_bunch,BUNCH,gun,1rb,3x1,bunch,no_te,none,none,right
+gun_2rb_2x2,DUFF,gun,2rb,2x2,spread,no_te,none,none,balanced
+gun_2rb_3x1,DICE,gun,2rb,3x1,spread,no_te,none,none,right
