@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--personnel")
     parser.add_argument("--opponent")
     parser.add_argument("--top-n", type=int, default=10, dest="top_n")
+    parser.add_argument("--max-per-concept", type=int, default=3, dest="max_per_concept")
     parser.add_argument(
         "--opponent-tendencies-path",
         default=str(DEFAULT_TENDENCIES_PATH),
@@ -79,6 +80,7 @@ def main() -> None:
         situation,
         tendencies=tendencies,
         top_n=args.top_n,
+        max_per_concept=args.max_per_concept,
     )
 
     print(f"Top {args.top_n} recommended plays:\n")

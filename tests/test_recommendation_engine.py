@@ -85,6 +85,15 @@ class RecommendationEngineTests(unittest.TestCase):
         self.assertFalse(kwargs)
         return score_play(pd.Series(play), situation)
 
+    def recommend_raw(
+        self,
+        plays: list[dict[str, object]],
+        situation: dict[str, object],
+        **kwargs: object,
+    ) -> list[dict[str, object]]:
+        """Call recommend_plays directly for advanced cases."""
+        return recommend_plays(pd.DataFrame(plays), situation, **kwargs)
+
     def test_third_short_exact_match_beats_early_down(self) -> None:
         recommendations = self.recommend(
             [
@@ -166,6 +175,7 @@ class RecommendationEngineTests(unittest.TestCase):
                     play_id="flood",
                     pass_concept="flood",
                     preferred_down_distance="second_medium",
+                    play_action="true",
                 ),
                 make_play(
                     play_id="generic",
@@ -345,6 +355,500 @@ class RecommendationEngineTests(unittest.TestCase):
             distance=10,
         )
         self.assertEqual(ids(recommendations)[:2], ["first", "second"])
+
+    def test_open_field_exact_is_not_overweighted(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="weak_open",
+                    preferred_field_zone="open_field",
+                    preferred_down_distance="early_down",
+                    pass_concept="four_verts",
+                    tags="deep_shot",
+                    beats_front="any",
+                    beats_coverage="cover3",
+                    beats_box="normal_box",
+                ),
+                make_play(
+                    play_id="better_any",
+                    play_type="rpo",
+                    play_family="rpo",
+                    rpo_tag="bubble",
+                    preferred_field_zone="any",
+                    preferred_down_distance="second_medium",
+                    pass_concept="glance",
+                    tags="quick_game",
+                    beats_front="even",
+                    beats_coverage="cover3",
+                    beats_box="normal_box",
+                ),
+            ],
+            down=2,
+            distance=7,
+            field_zone="open_field",
+            front_id="even",
+            coverage_id="cover3",
+            box_count=6,
+            personnel="10",
+            formation_id="gun_11_2x2",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["better_any", "weak_open"])
+
+    def test_third_medium_prefers_conversion_concept_over_four_verts(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="conversion",
+                    pass_concept="stick",
+                    preferred_down_distance="third_medium",
+                    beats_coverage="cover1",
+                    tags="quick_game;man_beater",
+                ),
+                make_play(
+                    play_id="verts",
+                    pass_concept="four_verts",
+                    preferred_down_distance="third_medium",
+                    beats_coverage="cover1",
+                    tags="deep_shot",
+                ),
+            ],
+            down=3,
+            distance=5,
+            field_zone="open_field",
+            coverage_id="cover1",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        verts = next(play for play in recommendations if play["play_id"] == "verts")
+        self.assertEqual(ids(recommendations)[:2], ["conversion", "verts"])
+        self.assertTrue(any("third_medium" in reason or "deep concept" in reason for reason in verts["reasons"]))
+
+    def test_second_medium_does_not_automatically_rank_four_verts_first(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="rpo",
+                    play_type="rpo",
+                    play_family="rpo",
+                    rpo_tag="bubble",
+                    pass_concept="glance",
+                    preferred_down_distance="second_medium",
+                    beats_coverage="cover3",
+                    tags="quick_game",
+                ),
+                make_play(
+                    play_id="verts",
+                    pass_concept="four_verts",
+                    preferred_down_distance="second_medium",
+                    beats_coverage="cover3",
+                    tags="deep_shot",
+                ),
+            ],
+            down=2,
+            distance=7,
+            field_zone="open_field",
+            coverage_id="cover3",
+            front_id="under",
+            box_count=6,
+            personnel="10",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["rpo", "verts"])
+
+    def test_four_verts_not_man_beater_without_explicit_tag(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="mesh",
+                    pass_concept="mesh",
+                    preferred_down_distance="third_medium",
+                    beats_coverage="cover1",
+                    tags="man_beater;quick_game",
+                ),
+                make_play(
+                    play_id="verts",
+                    pass_concept="four_verts",
+                    preferred_down_distance="third_medium",
+                    beats_coverage="cover1",
+                    tags="deep_shot",
+                ),
+            ],
+            down=3,
+            distance=5,
+            field_zone="open_field",
+            coverage_id="cover1",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        mesh = next(play for play in recommendations if play["play_id"] == "mesh")
+        verts = next(play for play in recommendations if play["play_id"] == "verts")
+        self.assertTrue(any("man_beater" in reason for reason in mesh["reasons"]))
+        self.assertFalse(any("man_beater" in reason for reason in verts["reasons"]))
+
+    def test_four_verts_cover3_bonus_is_contextual(self) -> None:
+        plays = [
+            make_play(
+                play_id="verts",
+                pass_concept="four_verts",
+                preferred_down_distance="early_down;third_medium",
+                beats_coverage="cover3",
+                tags="deep_shot",
+            ),
+            make_play(
+                play_id="curl",
+                pass_concept="curl_flat",
+                preferred_down_distance="early_down;third_medium",
+                beats_coverage="cover3",
+                tags="zone_beater;quick_game",
+            ),
+        ]
+        early = self.recommend(
+            plays,
+            down=1,
+            distance=10,
+            field_zone="open_field",
+            coverage_id="cover3",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        conversion = self.recommend(
+            plays,
+            down=3,
+            distance=5,
+            field_zone="open_field",
+            coverage_id="cover3",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        self.assertIn(ids(early)[0], {"verts", "curl"})
+        self.assertEqual(ids(conversion)[:2], ["curl", "verts"])
+
+    def test_rpo_or_quick_game_can_beat_deep_shot_on_second_medium(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="rpo",
+                    play_type="rpo",
+                    play_family="rpo",
+                    rpo_tag="hitch",
+                    pass_concept="glance",
+                    preferred_down_distance="second_medium",
+                    beats_coverage="cover3",
+                    tags="quick_game",
+                ),
+                make_play(
+                    play_id="verts",
+                    play_type="pass",
+                    pass_concept="four_verts",
+                    preferred_down_distance="second_medium",
+                    beats_coverage="cover3",
+                    tags="deep_shot",
+                ),
+            ],
+            down=2,
+            distance=7,
+            field_zone="open_field",
+            coverage_id="cover3",
+            front_id="under",
+            box_count=6,
+            personnel="10",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["rpo", "verts"])
+
+    def test_early_down_only_counts_strongly_on_first_down(self) -> None:
+        play = make_play(play_id="early", preferred_down_distance="early_down")
+        first = self.score(play, down=1, distance=10)
+        second = self.score(play, down=2, distance=5)
+        third = self.score(play, down=3, distance=5)
+
+        self.assertTrue(any("+24 down-distance: exact early_down fit on 1st down" in reason for reason in first["reasons"]))
+        self.assertFalse(any("+18 down-distance" in reason or "+20 down-distance" in reason for reason in second["reasons"]))
+        self.assertFalse(any("+18 down-distance" in reason or "+20 down-distance" in reason for reason in third["reasons"]))
+        self.assertTrue(any("weak fallback outside 1st down" in reason for reason in second["reasons"]))
+        self.assertTrue(any("weak fallback outside 1st down" in reason for reason in third["reasons"]))
+
+    def test_second_long_does_not_overreward_early_down(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="long", preferred_down_distance="second_long"),
+                make_play(play_id="early", preferred_down_distance="early_down"),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            front_id="even",
+            coverage_id="cover4",
+            box_count=5,
+            personnel="10",
+        )
+        early = next(play for play in recommendations if play["play_id"] == "early")
+        self.assertEqual(ids(recommendations)[:2], ["long", "early"])
+        self.assertFalse(any("+18 down-distance" in reason or "+20 down-distance" in reason for reason in early["reasons"]))
+        self.assertTrue(
+            any("weak fallback outside 1st down" in reason for reason in early["reasons"])
+            or not any("down-distance" in reason for reason in early["reasons"])
+        )
+
+    def test_second_long_penalizes_run_first_rpo_bubble(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="pass",
+                    play_type="pass",
+                    pass_concept="y_cross",
+                    preferred_down_distance="second_long",
+                    tags="intermediate_pass;zone_beater",
+                    beats_front="even",
+                    beats_coverage="cover4",
+                    beats_box="light_box",
+                ),
+                make_play(
+                    play_id="bubble",
+                    play_type="rpo",
+                    play_family="rpo",
+                    rpo_tag="bubble",
+                    run_scheme="counter",
+                    preferred_down_distance="early_down",
+                    tags="inside_run;gap_scheme",
+                    beats_front="even",
+                    beats_coverage="cover4",
+                    beats_box="light_box",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            front_id="even",
+            coverage_id="cover4",
+            box_count=5,
+            personnel="10",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["pass", "bubble"])
+
+    def test_light_box_run_bonus_disabled_in_long_yardage(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="run",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="duo",
+                    pass_concept="none",
+                    beats_box="light_box",
+                    preferred_down_distance="second_long",
+                    tags="inside_run;gap_scheme",
+                ),
+                make_play(
+                    play_id="pass",
+                    play_type="pass",
+                    pass_concept="curl_flat",
+                    beats_box="light_box",
+                    preferred_down_distance="second_long",
+                    tags="intermediate_pass",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            box_count=5,
+            coverage_id="cover4",
+            front_id="even",
+            personnel="10",
+        )
+        run = next(play for play in recommendations if play["play_id"] == "run")
+        self.assertEqual(ids(recommendations)[:2], ["pass", "run"])
+        self.assertFalse(any("inside_run should attack a light_box" in reason for reason in run["reasons"]))
+        self.assertFalse(any("gap_scheme can punish a light_box" in reason for reason in run["reasons"]))
+
+    def test_cover4_second_long_prefers_chunk_pass_over_rpo_now(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="chunk",
+                    play_type="pass",
+                    pass_concept="y_cross",
+                    preferred_down_distance="second_long",
+                    beats_coverage="cover4",
+                    tags="zone_beater;intermediate_pass",
+                ),
+                make_play(
+                    play_id="now",
+                    play_type="rpo",
+                    play_family="rpo",
+                    rpo_tag="now",
+                    run_scheme="counter",
+                    preferred_down_distance="early_down",
+                    beats_coverage="cover4",
+                    tags="inside_run;gap_scheme",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            coverage_id="cover4",
+            front_id="even",
+            box_count=5,
+            personnel="10",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["chunk", "now"])
+
+    def test_specific_coverages_do_not_family_match_other_specific_coverages(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="specific",
+                    beats_coverage="cover2;cover3;man",
+                    preferred_down_distance="second_long",
+                    pass_concept="four_verts",
+                ),
+                make_play(
+                    play_id="generic",
+                    beats_coverage="zone",
+                    preferred_down_distance="second_long",
+                    pass_concept="curl_flat",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            coverage_id="cover4",
+            front_id="even",
+            box_count=5,
+            personnel="10",
+        )
+        specific = next(play for play in recommendations if play["play_id"] == "specific")
+        generic = next(play for play in recommendations if play["play_id"] == "generic")
+        self.assertEqual(ids(recommendations)[:2], ["generic", "specific"])
+        self.assertFalse(any("coverage: family match" in reason for reason in specific["reasons"]))
+        self.assertTrue(any("coverage: family match via zone" in reason for reason in generic["reasons"]))
+
+    def test_four_verts_does_not_get_cover4_bonus_without_cover4_tag(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="verts",
+                    pass_concept="four_verts",
+                    beats_coverage="cover2;cover3;man",
+                    preferred_down_distance="second_long",
+                    tags="zone_beater;seam_read;middle_field_read;deep_shot",
+                ),
+                make_play(
+                    play_id="curl",
+                    pass_concept="curl_flat",
+                    beats_coverage="cover4",
+                    preferred_down_distance="second_long",
+                    tags="zone_beater",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            coverage_id="cover4",
+            front_id="even",
+            box_count=5,
+            personnel="10",
+        )
+        verts = next(play for play in recommendations if play["play_id"] == "verts")
+        self.assertEqual(ids(recommendations)[:2], ["curl", "verts"])
+        for forbidden in [
+            "contextual value versus cover4",
+            "seams profile helps versus cover4",
+            "family match via cover2",
+        ]:
+            self.assertFalse(any(forbidden in reason for reason in verts["reasons"]))
+
+    def test_zone_beater_tag_alone_does_not_rescue_missing_specific_coverage(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="miss",
+                    beats_coverage="cover2;cover3",
+                    preferred_down_distance="second_long",
+                    pass_concept="four_verts",
+                    tags="zone_beater;deep_shot",
+                ),
+                make_play(
+                    play_id="hit",
+                    beats_coverage="cover4",
+                    preferred_down_distance="second_long",
+                    pass_concept="curl_flat",
+                    tags="",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            coverage_id="cover4",
+            front_id="even",
+            box_count=5,
+            personnel="10",
+        )
+        miss = next(play for play in recommendations if play["play_id"] == "miss")
+        self.assertEqual(ids(recommendations)[:2], ["hit", "miss"])
+        self.assertFalse(any("zone_beater traits fit zone coverage" in reason for reason in miss["reasons"]))
+
+    def test_generic_zone_beats_specific_mismatch_for_cover4(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="specific",
+                    beats_coverage="cover2;cover3",
+                    preferred_down_distance="second_long",
+                    pass_concept="four_verts",
+                ),
+                make_play(
+                    play_id="zone",
+                    beats_coverage="zone",
+                    preferred_down_distance="second_long",
+                    pass_concept="curl_flat",
+                ),
+            ],
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            coverage_id="cover4",
+            front_id="even",
+            box_count=5,
+            personnel="10",
+        )
+        specific = next(play for play in recommendations if play["play_id"] == "specific")
+        zone = next(play for play in recommendations if play["play_id"] == "zone")
+        self.assertTrue(any("coverage: family match via zone" in reason for reason in zone["reasons"]))
+        self.assertFalse(any("coverage: family match" in reason for reason in specific["reasons"]))
+
+    def test_max_per_concept_limits_duplicate_output(self) -> None:
+        plays = [
+            make_play(play_id="verts1", pass_concept="four_verts", pass_modifier="base", play_action="false", preferred_down_distance="second_long", beats_coverage="cover4"),
+            make_play(play_id="verts2", pass_concept="four_verts", pass_modifier="base", play_action="false", preferred_down_distance="second_long", beats_coverage="cover4"),
+            make_play(play_id="verts3", pass_concept="four_verts", pass_modifier="base", play_action="false", preferred_down_distance="second_long", beats_coverage="cover4"),
+            make_play(play_id="verts4", pass_concept="four_verts", pass_modifier="base", play_action="false", preferred_down_distance="second_long", beats_coverage="cover4"),
+            make_play(play_id="curl1", pass_concept="curl_flat", preferred_down_distance="second_long", beats_coverage="cover4"),
+            make_play(play_id="flood1", pass_concept="flood", preferred_down_distance="second_long", beats_coverage="cover4"),
+        ]
+        situation = build_situation(
+            down=2,
+            distance=15,
+            field_zone="open_field",
+            front_id="even",
+            coverage_id="cover4",
+            box_count=5,
+            personnel="10",
+            formation_id=None,
+        )
+        recommendations = self.recommend_raw(
+            plays,
+            situation,
+            top_n=10,
+            max_per_concept=2,
+        )
+        verts_count = sum(
+            1 for play in recommendations
+            if play.get("concept_scheme") == "four_verts"
+        )
+        self.assertLessEqual(verts_count, 2)
 
 
 if __name__ == "__main__":
