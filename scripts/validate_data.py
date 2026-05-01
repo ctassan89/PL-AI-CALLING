@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 from pathlib import Path
 
@@ -91,6 +92,14 @@ REQUIRED_DEFENSIVE_TENDENCY_COLUMNS = {
 }
 
 
+def format_relative_path(path: Path, base_dir: Path) -> str:
+    """Format a path relative to the validation base directory when possible."""
+    try:
+        return str(path.relative_to(base_dir))
+    except ValueError:
+        return str(path)
+
+
 def load_csv_rows(path: Path) -> list[dict[str, str]]:
     """Load CSV rows as dictionaries."""
     with path.open(newline="") as handle:
@@ -139,22 +148,28 @@ def add_exact_column_order_error(
         )
 
 
-def load_single_column_taxonomy(path: Path, errors: list[str]) -> set[str]:
+def load_single_column_taxonomy(
+    path: Path,
+    errors: list[str],
+    base_dir: Path,
+) -> set[str]:
     """Load a taxonomy file that must contain exactly one `value` column."""
     if not path.exists():
-        errors.append(f"Missing taxonomy file: {path.relative_to(BASE_DIR)}")
+        errors.append(f"Missing taxonomy file: {format_relative_path(path, base_dir)}")
         return set()
 
     columns = load_csv_columns(path)
     if columns != ["value"]:
         errors.append(
-            f"{path.relative_to(BASE_DIR)} must contain exactly one column named 'value'."
+            f"{format_relative_path(path, base_dir)} must contain exactly one column named 'value'."
         )
         return set()
 
     values = {get_row_value(row, "value") for row in load_csv_rows(path) if get_row_value(row, "value")}
     if not values:
-        errors.append(f"{path.relative_to(BASE_DIR)} must contain at least one value.")
+        errors.append(
+            f"{format_relative_path(path, base_dir)} must contain at least one value."
+        )
     return values
 
 
@@ -282,12 +297,18 @@ def add_run_scheme_modifier_pair_errors(
             )
 
 
-def main() -> None:
-    """Run validation checks for defensive tendency input data."""
+def validate_data(base_dir: Path) -> list[str]:
+    """Validate taxonomy and raw input CSV files under a repository base dir."""
+    base_dir = Path(base_dir)
+    data_dir = base_dir / "data"
+    taxonomy_dir = data_dir / "taxonomy"
+    raw_dir = data_dir / "raw"
+    formation_taxonomy_path = taxonomy_dir / "offensive_formations.csv"
+
     errors: list[str] = []
 
-    defensive_tendency_columns = load_csv_columns(RAW_DIR / "defensive_tendencies.csv")
-    playbook_columns = load_csv_columns(RAW_DIR / "playbook.csv")
+    defensive_tendency_columns = load_csv_columns(raw_dir / "defensive_tendencies.csv")
+    playbook_columns = load_csv_columns(raw_dir / "playbook.csv")
     add_missing_column_errors(
         errors,
         defensive_tendency_columns,
@@ -303,18 +324,22 @@ def main() -> None:
     add_exact_column_order_error(errors, playbook_columns, PLAYBOOK_COLUMNS, "playbook.csv")
 
     taxonomy_values = {
-        column_name: load_single_column_taxonomy(TAXONOMY_DIR / filename, errors)
+        column_name: load_single_column_taxonomy(
+            taxonomy_dir / filename,
+            errors,
+            base_dir,
+        )
         for column_name, filename in {
             **SINGLE_VALUE_TAXONOMIES,
             **MULTI_VALUE_TAXONOMIES,
         }.items()
     }
 
-    valid_run_pair_path = TAXONOMY_DIR / "valid_run_scheme_modifier_pairs.csv"
+    valid_run_pair_path = taxonomy_dir / "valid_run_scheme_modifier_pairs.csv"
     valid_run_pairs: set[tuple[str, str]] = set()
     if not valid_run_pair_path.exists():
         errors.append(
-            f"Missing taxonomy file: {valid_run_pair_path.relative_to(BASE_DIR)}"
+            f"Missing taxonomy file: {format_relative_path(valid_run_pair_path, base_dir)}"
         )
     elif load_csv_columns(valid_run_pair_path) != ["run_scheme", "run_modifier"]:
         errors.append(
@@ -328,21 +353,18 @@ def main() -> None:
         }
 
     if errors:
-        print("Data validation failed:")
-        for error in errors:
-            print(f"- {error}")
-        raise SystemExit(1)
+        return errors
 
-    defensive_tendencies = load_csv_rows(RAW_DIR / "defensive_tendencies.csv")
-    playbook = load_csv_rows(RAW_DIR / "playbook.csv")
+    defensive_tendencies = load_csv_rows(raw_dir / "defensive_tendencies.csv")
+    playbook = load_csv_rows(raw_dir / "playbook.csv")
 
-    front_ids = load_id_set(TAXONOMY_DIR / "fronts.csv", "front_id")
-    coverage_ids = load_id_set(TAXONOMY_DIR / "coverages.csv", "coverage_id")
+    front_ids = load_id_set(taxonomy_dir / "fronts.csv", "front_id")
+    coverage_ids = load_id_set(taxonomy_dir / "coverages.csv", "coverage_id")
     defensive_personnel_ids = load_id_set(
-        TAXONOMY_DIR / "defensive_personnel.csv",
+        taxonomy_dir / "defensive_personnel.csv",
         "defensive_personnel_id",
     )
-    formation_ids = load_id_set(FORMATION_TAXONOMY_PATH, "formation_id")
+    formation_ids = load_id_set(formation_taxonomy_path, "formation_id")
 
     add_unknown_id_errors(errors, defensive_tendencies, "front_id", front_ids)
     add_unknown_id_errors(errors, defensive_tendencies, "coverage_id", coverage_ids)
@@ -416,6 +438,26 @@ def main() -> None:
         taxonomy_values["run_modifier"],
         valid_run_pairs,
     )
+
+    return errors
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the validator CLI."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=BASE_DIR,
+        help="Repository base directory that contains the data/ folder.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Run validation checks for defensive tendency input data."""
+    args = parse_args()
+    errors = validate_data(args.base_dir)
 
     if errors:
         print("Data validation failed:")
