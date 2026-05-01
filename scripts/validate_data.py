@@ -56,6 +56,7 @@ SINGLE_VALUE_TAXONOMIES = {
     "protection": "protection.csv",
     "rpo_tag": "rpo_tag.csv",
     "play_action": "play_action.csv",
+    "personnel": "personnel.csv",
 }
 
 MULTI_VALUE_TAXONOMIES = {
