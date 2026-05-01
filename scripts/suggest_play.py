@@ -28,12 +28,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--down", type=int, required=True)
     parser.add_argument("--distance", required=True)
     parser.add_argument("--field-zone", required=True, dest="field_zone")
-    parser.add_argument("--formation-id", required=True, dest="formation_id")
-    parser.add_argument("--front-id", required=True, dest="front_id")
-    parser.add_argument("--coverage-id", required=True, dest="coverage_id")
+    parser.add_argument("--formation-id", dest="formation_id")
+    parser.add_argument("--front-id", dest="front_id")
+    parser.add_argument("--coverage-id", dest="coverage_id")
     parser.add_argument("--box-count", type=int, required=True, dest="box_count")
     parser.add_argument("--personnel")
     parser.add_argument("--opponent")
+    parser.add_argument("--top-n", type=int, default=10, dest="top_n")
     parser.add_argument(
         "--opponent-tendencies-path",
         default=str(DEFAULT_TENDENCIES_PATH),
@@ -73,13 +74,25 @@ def main() -> None:
             }
         )
 
-    top_plays = recommend_plays(playbook, situation, tendencies=tendencies, limit=3)
+    top_plays = recommend_plays(
+        playbook,
+        situation,
+        tendencies=tendencies,
+        top_n=args.top_n,
+    )
 
-    print("Top 3 recommended plays:\n")
+    print(f"Top {args.top_n} recommended plays:\n")
     print(f"Opponent tendencies used: {'yes' if tendencies else 'no'}\n")
     for rank, play in enumerate(top_plays, start=1):
+        concept_scheme = play.get("concept_scheme", "")
         print(
-            f"{rank}. {play['play_name']} ({play['play_id']}) — score: {play['score']:.2f}"
+            f"{rank}. {play['play_name']} | "
+            f"play_id={play['play_id']} | "
+            f"score={play['score']:.2f} | "
+            f"formation_id={play.get('formation_id', '')} | "
+            f"personnel={play.get('personnel', '')} | "
+            f"play_type={play.get('play_type', '')} | "
+            f"concept/scheme={concept_scheme}"
         )
         print("   Reasons:")
         if play["reasons"]:

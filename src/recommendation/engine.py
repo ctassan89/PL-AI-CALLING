@@ -1,15 +1,9 @@
-"""Recommendation engine with situation-first football scoring.
-
-The core design principle is that down, distance, and territory drive the base
-recommendation. Defensive matchup signals still matter, but they are secondary
-and cannot override obviously bad situational football such as a pure run on
-3rd-and-15.
-"""
+"""Explainable football-coherent recommendation engine."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypedDict
 
 import pandas as pd
 
@@ -17,294 +11,109 @@ import pandas as pd
 Situation = Mapping[str, Any]
 TendencySnapshot = Mapping[str, Mapping[str, float]]
 
-# Secondary matchup weights. These remain important, but are intentionally
-# smaller than situation-fit weights so they cannot overpower down/distance.
-MATCHUP_SCORE_WEIGHTS = {
-    "front_match": 1.5,
-    "coverage_match": 2.5,
-    "box_match": 1.5,
-    "formation_match": 1.0,
-    "distance_match": 0.5,
-    "field_zone_match": 0.5,
-}
 
-# Situation-first weights. These are the strongest levers in the system.
-SITUATION_SCORE_WEIGHTS = {
-    "balanced_run": 3.0,
-    "balanced_pass": 2.5,
-    "balanced_rpo": 3.0,
-    "aggressive_shot": 3.5,
-    "attacks_sticks": 5.5,
-    "quick_answer": 3.5,
-    "screen_answer": 4.0,
-    "short_yardage_boost": 5.0,
-    "medium_conversion_boost": 4.5,
-    "long_run_penalty": -9.0,
-    "very_long_run_penalty": -13.0,
-    "second_long_run_penalty": -3.5,
-    "deep_shot_short_penalty": -4.0,
-    "backed_up_safe_call": 3.0,
-    "backed_up_risk_penalty": -4.0,
-    "plus_territory_aggression": 1.5,
-    "red_zone_boost": 3.0,
-    "red_zone_space_penalty": -3.0,
-    "goal_line_boost": 5.0,
-    "goal_line_bad_space_penalty": -6.0,
-}
+class Recommendation(TypedDict, total=False):
+    """Structured recommendation payload for scoring and ranking."""
 
-# Tendency adjustments layer on top of base football logic and are capped below
-# the hard situational penalties.
-TENDENCY_SCORE_WEIGHTS = {
-    "coverage_match": 2.0,
-    "box_match": 1.25,
-    "pressure_answer": 2.5,
-    "pressure_risk": -3.5,
-    "light_box_run": 1.5,
-    "heavy_box_run": -2.0,
-    "heavy_box_pass": 1.0,
-}
+    play_id: str
+    play_name: str
+    score: float
+    base_score: float
+    tendency_adjustment: float
+    reasons: list[str]
+    formation_id: str
+    personnel: str
+    play_type: str
+    concept_scheme: str
+    component_scores: dict[str, float]
+    tie_breakers: dict[str, Any]
+    used_tendencies: bool
 
-# Guardrails are still implemented as score penalties so recommendations remain
-# explainable, but they are large enough to keep nonsense out of the top calls.
-GUARDRAIL_SCORE_WEIGHTS = {
-    "money_very_long_pure_run": -18.0,
-    "money_long_pure_run": -10.0,
-    "backed_up_shot": -8.0,
-    "red_zone_vertical": -7.0,
-}
 
-SHORT_YARDAGE_CONCEPTS = {"stick", "choice", "slant_flat", "spacing", "curl_flat"}
-ATTACKS_STICKS_CONCEPTS = {
-    "flood",
-    "mesh",
-    "drive",
-    "levels",
-    "dagger",
-    "y_cross",
-    "four_verts",
-    "choice",
-    "curl_flat",
-}
-SHOT_CONCEPTS = {"four_verts", "mills", "wheel"}
-VERTICAL_SPACE_CONCEPTS = {"four_verts", "mills", "wheel"}
-SLOW_DEVELOPING_CONCEPTS = {"four_verts", "mills", "dagger", "y_cross", "flood"}
-PRESSURE_ANSWER_CONCEPTS = {"slant_flat", "stick", "spacing", "curl_flat"}
-RED_ZONE_FRIENDLY_CONCEPTS = {"slant_flat", "stick", "spacing", "flood"}
-GOAL_LINE_FRIENDLY_SCHEMES = {"inside_zone", "duo", "power", "trap", "iso"}
-GOAL_LINE_FRIENDLY_CONCEPTS = {"slant_flat", "flood", "stick"}
-
-NUMERIC_DISTANCE_TO_BUCKET = (
-    (2, "short"),
-    (6, "medium"),
-    (10, "long"),
-)
-FIELD_ZONE_TO_TERRITORY = {
-    "own_redzone": "backed_up",
-    "own_territory": "own_side",
-    "midfield": "midfield",
-    "opp_territory": "plus_territory",
-    "redzone": "red_zone",
-    "goal_line": "goal_line",
-}
-FIELD_ZONE_TO_LABEL = {
-    "own_redzone": "backed up",
-    "own_territory": "own side",
-    "midfield": "midfield",
-    "opp_territory": "plus territory",
-    "redzone": "red zone",
-    "goal_line": "goal line",
-}
-FIELD_ZONE_TO_PLAYBOOK_VALUE = {
-    "backed_up": "own_redzone",
-    "own_side": "own_territory",
-    "midfield": "midfield",
-    "plus_territory": "opp_territory",
+FIELD_ZONE_ALIASES = {
+    "midfield": "open_field",
+    "own_territory": "open_field",
+    "opp_territory": "open_field",
+    "open_field": "open_field",
+    "high_red_zone": "high_redzone",
+    "high_redzone": "high_redzone",
     "red_zone": "redzone",
+    "redzone": "redzone",
     "goal_line": "goal_line",
+    "own_redzone": "high_redzone",
 }
 
-DISTANCE_ALIASES = {
-    "xlong": "very_long",
-    "very_long": "very_long",
-    "very long": "very_long",
-    "long": "long",
-    "medium": "medium",
-    "short": "short",
+RELATED_ZONES = {
+    "high_redzone": {"redzone"},
+    "redzone": {"high_redzone", "goal_line"},
+    "goal_line": {"redzone"},
+    "open_field": set(),
 }
 
+COVERAGE_FAMILY = {
+    "cover0": {"man"},
+    "cover1": {"man"},
+    "cover2": {"zone"},
+    "cover3": {"zone"},
+    "cover4": {"zone", "match"},
+    "cover4_quarters": {"zone", "match"},
+    "soft_zone": {"zone"},
+    "match": {"match"},
+    "man": {"man"},
+    "zone": {"zone"},
+}
 
-def parse_list(value: object) -> list[str]:
-    """Split a semicolon-separated field into normalized values."""
-    if value is None:
-        return []
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return []
-    return [item.strip() for item in text.split(";") if item.strip()]
+RELATED_BOXES = {
+    "light_box": {"normal_box"},
+    "normal_box": {"light_box"},
+    "heavy_box": {"loaded_box"},
+    "loaded_box": {"heavy_box"},
+    "neutral_box": {"light_box"},
+}
+
+SHORT_TAGS = {"third_short", "fourth_short", "second_short"}
+MEDIUM_LONG_TAGS = {
+    "second_medium",
+    "second_long",
+    "third_medium",
+    "third_long",
+    "fourth_medium",
+}
+SLOW_DEVELOPING_CONCEPTS = {"flood", "four_verts", "verts", "dagger", "y_cross", "levels"}
+DEEP_SHOT_CONCEPTS = {"four_verts", "verts", "post", "go", "mills"}
+QUICK_GAME_CONCEPTS = {"slant_flat", "spacing", "stick", "curl_flat", "snag", "hitch", "mesh"}
+SCREEN_CONCEPTS = {"screen", "screens", "now_screen", "bubble"}
+GAP_SCHEMES = {"duo", "power", "counter", "trap", "iso", "pin_pull"}
+ZONE_SCHEMES = {"inside_zone", "outside_zone", "wide_zone", "stretch"}
+PERIMETER_RUN_SCHEMES = {"outside_zone", "wide_zone", "jet", "toss", "sweep"}
+INSIDE_RUN_SCHEMES = {"inside_zone", "duo", "power", "counter", "trap", "iso"}
 
 
 def normalize_text(value: object) -> str:
     """Normalize a free-form value for comparisons."""
-    return str(value).strip().lower()
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    return "" if text == "nan" else text
+
+
+def parse_list(value: object) -> list[str]:
+    """Split a semicolon-separated field into normalized values."""
+    text = normalize_text(value)
+    if not text:
+        return []
+    return [item.strip() for item in text.split(";") if item.strip()]
 
 
 def parse_numeric(value: object) -> int | None:
-    """Parse an integer from a value when possible."""
-    text = str(value).strip()
+    """Parse an integer when possible."""
+    text = normalize_text(value)
     if not text:
         return None
     try:
         return int(float(text))
     except ValueError:
         return None
-
-
-def map_box_count(box_count: int) -> str:
-    """Map a numeric box count to a categorical box label."""
-    if box_count <= 5:
-        return "light_box"
-    if box_count == 6:
-        return "neutral_box"
-    if box_count == 7:
-        return "heavy_box"
-    return "loaded_box"
-
-
-def matches_category(play_values: list[str], target_value: str) -> bool:
-    """Return whether a category matches, respecting any/none rules."""
-    if "any" in play_values:
-        return True
-    if "none" in play_values:
-        return False
-    return target_value in play_values
-
-
-def classify_distance_bucket(distance: object) -> tuple[str, int | None]:
-    """Map numeric or legacy string distance values to football buckets."""
-    numeric_distance = parse_numeric(distance)
-    if numeric_distance is not None:
-        for max_yards, bucket in NUMERIC_DISTANCE_TO_BUCKET:
-            if numeric_distance <= max_yards:
-                return bucket, numeric_distance
-        return "very_long", numeric_distance
-
-    distance_key = normalize_text(distance).replace("-", "_")
-    bucket = DISTANCE_ALIASES.get(distance_key)
-    if bucket is None:
-        raise ValueError(f"Unsupported distance value: {distance}")
-    return bucket, None
-
-
-def classify_down_bucket(down: object) -> str:
-    """Map down number to early-down or money-down bucket."""
-    numeric_down = parse_numeric(down)
-    if numeric_down in {1, 2}:
-        return "early_down"
-    if numeric_down in {3, 4}:
-        return "money_down"
-    raise ValueError(f"Unsupported down value: {down}")
-
-
-def classify_field_position(field_zone: object) -> str:
-    """Map existing field-zone strings to explicit territory buckets."""
-    field_zone_key = normalize_text(field_zone)
-    territory = FIELD_ZONE_TO_TERRITORY.get(field_zone_key)
-    if territory is None:
-        raise ValueError(f"Unsupported field zone value: {field_zone}")
-    return territory
-
-
-def describe_distance_bucket(bucket: str) -> str:
-    """Return a readable distance label."""
-    return bucket.replace("_", " ")
-
-
-def classify_combined_situation(
-    down: int,
-    distance_bucket: str,
-    raw_distance: int | None,
-) -> str:
-    """Build a combined situation key used by the scoring rules."""
-    if down == 1 and (raw_distance == 10 or distance_bucket == "medium"):
-        return "first_and_10"
-    if down == 2:
-        return {
-            "short": "second_and_short",
-            "medium": "second_and_medium",
-            "long": "second_and_long",
-            "very_long": "second_and_very_long",
-        }[distance_bucket]
-    if down in {3, 4}:
-        return {
-            "short": "money_down_short",
-            "medium": "money_down_medium",
-            "long": "money_down_long",
-            "very_long": "money_down_very_long",
-        }[distance_bucket]
-    return "early_down"
-
-
-def describe_combined_situation(situation_key: str) -> str:
-    """Return a readable label for score explanations."""
-    labels = {
-        "first_and_10": "1st & 10",
-        "second_and_short": "2nd & short",
-        "second_and_medium": "2nd & medium",
-        "second_and_long": "2nd & long",
-        "second_and_very_long": "2nd & very long",
-        "money_down_short": "3rd/4th & short",
-        "money_down_medium": "3rd/4th & medium",
-        "money_down_long": "3rd/4th & long",
-        "money_down_very_long": "3rd/4th & very long",
-    }
-    return labels.get(situation_key, situation_key.replace("_", " "))
-
-
-def build_situation(
-    *,
-    down: int | str,
-    distance: str | int,
-    field_zone: str,
-    formation_id: str,
-    front_id: str,
-    coverage_id: str,
-    box_count: int,
-    personnel: str | None = None,
-    opponent: str | None = None,
-) -> dict[str, str | int]:
-    """Create the normalized situation payload used by the recommender."""
-    numeric_down = parse_numeric(down)
-    if numeric_down is None:
-        raise ValueError(f"Unsupported down value: {down}")
-
-    distance_bucket, raw_distance = classify_distance_bucket(distance)
-    territory = classify_field_position(field_zone)
-    combined_situation = classify_combined_situation(
-        numeric_down, distance_bucket, raw_distance
-    )
-
-    situation: dict[str, str | int] = {
-        "down": str(numeric_down),
-        "down_bucket": classify_down_bucket(numeric_down),
-        "distance": str(distance),
-        "distance_bucket": distance_bucket,
-        "raw_distance": raw_distance if raw_distance is not None else "",
-        "combined_situation": combined_situation,
-        "combined_situation_label": describe_combined_situation(combined_situation),
-        "field_zone": str(field_zone),
-        "territory": territory,
-        "territory_label": FIELD_ZONE_TO_LABEL[str(field_zone)],
-        "formation_id": str(formation_id),
-        "front_id": str(front_id),
-        "coverage_id": str(coverage_id),
-        "box_label": map_box_count(int(box_count)),
-        "box_count": str(int(box_count)),
-    }
-    if personnel:
-        situation["personnel"] = str(personnel)
-    if opponent:
-        situation["opponent"] = str(opponent)
-    return situation
 
 
 def play_series_value(play: pd.Series, column_name: str, default: str = "") -> str:
@@ -317,404 +126,639 @@ def play_series_value(play: pd.Series, column_name: str, default: str = "") -> s
     return str(value)
 
 
-def infer_play_tags(play: pd.Series) -> set[str]:
-    """Build semantic tags from explicit tags plus existing schema fields."""
-    tags = set(parse_list(play_series_value(play, "tags")))
-    play_family = play_series_value(play, "play_family")
-    play_type = play_series_value(play, "play_type")
-    run_scheme = play_series_value(play, "run_scheme")
-    run_modifier = play_series_value(play, "run_modifier")
-    pass_concept = play_series_value(play, "pass_concept")
-    pass_modifier = play_series_value(play, "pass_modifier")
-    rpo_tag = play_series_value(play, "rpo_tag")
-    play_action = normalize_text(play_series_value(play, "play_action")) == "true"
-
-    if play_type == "run":
-        tags.add("pure_run")
-    if play_type == "screen" or play_family == "screen":
-        tags.update({"screen", "pressure_answer", "safe_call"})
-    if play_family == "quick_game" or pass_concept in PRESSURE_ANSWER_CONCEPTS:
-        tags.update({"quick_game", "pressure_answer", "safe_call"})
-    if play_type == "rpo" or play_family == "rpo" or rpo_tag != "none":
-        tags.update({"rpo", "pressure_answer"})
-    if play_action or play_family in {"play_action", "boot"}:
-        tags.add("play_action")
-    if play_family == "boot":
-        tags.add("boot")
-
-    if run_scheme in {"inside_zone", "duo", "power", "counter", "trap", "iso"}:
-        tags.add("inside_run")
-    if run_scheme in {"outside_zone", "option"}:
-        tags.add("outside_run")
-    if run_scheme in {"power", "duo", "trap", "iso", "qb_run"}:
-        tags.add("short_yardage")
-    if run_scheme == "draw" or run_modifier == "draw":
-        tags.update({"draw", "safe_call"})
-
-    if pass_concept in ATTACKS_STICKS_CONCEPTS:
-        tags.add("attacks_sticks")
-    if pass_concept in SHOT_CONCEPTS or pass_modifier == "switch":
-        tags.update({"shot", "vertical"})
-    if pass_concept in VERTICAL_SPACE_CONCEPTS:
-        tags.add("vertical")
-    if pass_concept in SLOW_DEVELOPING_CONCEPTS:
-        tags.add("slow_developing")
-    if pass_concept in RED_ZONE_FRIENDLY_CONCEPTS:
-        tags.add("red_zone")
-
-    if run_scheme in GOAL_LINE_FRIENDLY_SCHEMES or pass_concept in GOAL_LINE_FRIENDLY_CONCEPTS:
-        tags.add("goal_line")
-    if "screen" in tags:
-        tags.add("attacks_sticks")
-
-    return tags
-
-
-def is_pure_run(play: pd.Series) -> bool:
-    """Return whether the play is a true run rather than RPO/pass."""
-    return "pure_run" in infer_play_tags(play)
-
-
-def is_pressure_answer(play: pd.Series) -> bool:
-    """Return whether the play gives a quick answer versus pressure."""
-    return "pressure_answer" in infer_play_tags(play)
-
-
-def is_valid_money_down_run(play: pd.Series) -> bool:
-    """Return whether a run has a special tag that makes it less absurd on long yardage."""
-    tags = infer_play_tags(play)
-    return bool({"draw", "safe_call"} & tags)
-
-
-def add_score_reason(reasons: list[str], delta: float, text: str) -> float:
-    """Record a scored reason using a consistent explainable format."""
-    reasons.append(f"{delta:+.1f} {text}")
+def add_reason(reasons: list[str], delta: float, text: str) -> float:
+    """Record an explainable score reason."""
+    reasons.append(f"{delta:+.0f} {text}")
     return delta
 
 
-def score_situational_fit(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
-    """Score football realism for down, distance, and territory."""
-    tags = infer_play_tags(play)
-    situation_key = str(situation["combined_situation"])
-    territory = str(situation["territory"])
-    reasons: list[str] = []
-    score = 0.0
-
-    if situation_key == "first_and_10":
-        if "pure_run" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["balanced_run"],
-                "situation fit: 1st & 10 allows balanced run game",
-            )
-        if "rpo" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["balanced_rpo"],
-                "situation fit: 1st & 10 is favorable for RPOs",
-            )
-        if "play_action" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["balanced_pass"],
-                "situation fit: 1st & 10 supports play action",
-            )
-        if tags & {"quick_game", "attacks_sticks", "screen"}:
-            score += add_score_reason(
-                reasons,
-                2.0,
-                "situation fit: 1st & 10 keeps base pass concepts available",
-            )
-
-    elif situation_key == "second_and_short":
-        if "play_action" in tags or "shot" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["aggressive_shot"],
-                "situation fit: 2nd & short allows aggressive play-action or shot calls",
-            )
-        if "pure_run" in tags or "rpo" in tags:
-            score += add_score_reason(
-                reasons,
-                2.5,
-                "situation fit: 2nd & short still supports efficient run/RPO calls",
-            )
-        if "quick_game" in tags:
-            score += add_score_reason(
-                reasons,
-                1.5,
-                "situation fit: 2nd & short supports high-percentage quick game",
-            )
-
-    elif situation_key == "second_and_medium":
-        if "pure_run" in tags or "rpo" in tags:
-            score += add_score_reason(
-                reasons,
-                2.0,
-                "situation fit: 2nd & medium allows balanced run/RPO calls",
-            )
-        if tags & {"quick_game", "attacks_sticks", "screen"}:
-            score += add_score_reason(
-                reasons,
-                2.0,
-                "situation fit: 2nd & medium supports balanced pass concepts",
-            )
-
-    elif situation_key in {"second_and_long", "second_and_very_long"}:
-        if "pure_run" in tags and "draw" not in tags:
-            penalty = SITUATION_SCORE_WEIGHTS["second_long_run_penalty"]
-            if situation_key == "second_and_very_long":
-                penalty -= 1.5
-            score += add_score_reason(
-                reasons,
-                penalty,
-                f"situation penalty: {describe_combined_situation(situation_key)} reduces low-upside pure runs",
-            )
-        if tags & {"quick_game", "rpo", "screen"}:
-            boost = 3.0 if situation_key == "second_and_very_long" else 2.5
-            score += add_score_reason(
-                reasons,
-                boost,
-                f"situation fit: {describe_combined_situation(situation_key)} favors efficient pass answers",
-            )
-        if "attacks_sticks" in tags:
-            boost = 3.5 if situation_key == "second_and_very_long" else 2.5
-            score += add_score_reason(
-                reasons,
-                boost,
-                f"situation fit: {describe_combined_situation(situation_key)} favors concepts attacking the sticks",
-            )
-        if "play_action" in tags and situation_key == "second_and_short":
-            score += add_score_reason(
-                reasons,
-                2.0,
-                "situation fit: 2nd & short supports play action",
-            )
-
-    elif situation_key == "money_down_short":
-        if "short_yardage" in tags or "inside_run" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["short_yardage_boost"],
-                "situation fit: 3rd/4th & short favors short-yardage run concepts",
-            )
-        if tags & {"quick_game", "rpo", "pressure_answer"}:
-            score += add_score_reason(
-                reasons,
-                4.0,
-                "situation fit: 3rd/4th & short favors quick, high-percentage answers",
-            )
-        if "shot" in tags and "play_action" not in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["deep_shot_short_penalty"],
-                "situation penalty: deep shot is low percentage on 3rd/4th & short",
-            )
-
-    elif situation_key == "money_down_medium":
-        if tags & {"quick_game", "attacks_sticks", "rpo"}:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["medium_conversion_boost"],
-                "situation fit: 3rd/4th & medium favors efficient concepts near the sticks",
-            )
-        if "pure_run" in tags and "draw" not in tags:
-            score += add_score_reason(
-                reasons,
-                -5.0,
-                "situation penalty: pure run is low percentage on 3rd/4th & medium",
-            )
-        if "shot" in tags and "play_action" not in tags:
-            score += add_score_reason(
-                reasons,
-                -2.5,
-                "situation penalty: low-percentage deep shot is risky on 3rd/4th & medium",
-            )
-
-    elif situation_key == "money_down_long":
-        if "pure_run" in tags and "draw" not in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["long_run_penalty"],
-                "situation penalty: pure run on 3rd/4th & long is strongly discouraged",
-            )
-        if tags & {"attacks_sticks", "screen"}:
-            score += add_score_reason(
-                reasons,
-                5.0,
-                "situation fit: 3rd/4th & long favors concepts attacking the sticks or using screens",
-            )
-        if "pressure_answer" in tags and "quick_game" in tags:
-            score += add_score_reason(
-                reasons,
-                2.5,
-                "situation fit: quick answers can still help on 3rd/4th & long",
-            )
-
-    elif situation_key == "money_down_very_long":
-        if "pure_run" in tags and "draw" not in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["very_long_run_penalty"],
-                "situation penalty: pure run on 3rd/4th & very long is near-disqualifying",
-            )
-        if tags & {"attacks_sticks", "screen"}:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["attacks_sticks"],
-                "situation fit: 3rd/4th & very long favors pass concepts attacking the sticks",
-            )
-        if "quick_game" in tags and "attacks_sticks" not in tags:
-            score += add_score_reason(
-                reasons,
-                1.5,
-                "situation fit: quick game is a better answer than a pure run on 3rd/4th & very long",
-            )
-
-    if territory == "backed_up":
-        if tags & {"safe_call", "quick_game", "screen"} or "pure_run" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["backed_up_safe_call"],
-                "territory fit: backed-up offense favors safe field-position calls",
-            )
-        if "shot" in tags or ("slow_developing" in tags and "play_action" not in tags):
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["backed_up_risk_penalty"],
-                "territory penalty: backed-up offense should avoid risky deep or slow-developing calls",
-            )
-
-    elif territory == "plus_territory":
-        if tags & {"shot", "play_action", "attacks_sticks"}:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["plus_territory_aggression"],
-                "territory fit: plus territory allows a bit more aggression",
-            )
-
-    elif territory == "red_zone":
-        if tags & {"red_zone", "goal_line", "inside_run", "quick_game", "play_action"}:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["red_zone_boost"],
-                "territory fit: red zone favors condensed-space concepts",
-            )
-        if "vertical" in tags or "shot" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["red_zone_space_penalty"],
-                "territory penalty: red zone limits deep-vertical spacing concepts",
-            )
-
-    elif territory == "goal_line":
-        if tags & {"goal_line", "inside_run", "short_yardage", "quick_game", "play_action"}:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["goal_line_boost"],
-                "territory fit: goal line favors condensed, high-percentage concepts",
-            )
-        if "vertical" in tags or "shot" in tags:
-            score += add_score_reason(
-                reasons,
-                SITUATION_SCORE_WEIGHTS["goal_line_bad_space_penalty"],
-                "territory penalty: goal line is a poor place for deep-space concepts",
-            )
-
-    return score, reasons
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    """Clamp a numeric value."""
+    return max(minimum, min(value, maximum))
 
 
-def score_matchup_fit(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
-    """Score secondary matchup information such as coverage, front, and box."""
-    score = 0.0
-    reasons: list[str] = []
+def normalize_field_zone(field_zone: object) -> str:
+    """Normalize field-zone aliases into the engine vocabulary."""
+    key = normalize_text(field_zone)
+    normalized = FIELD_ZONE_ALIASES.get(key)
+    if normalized is None:
+        raise ValueError(f"Unsupported field zone value: {field_zone}")
+    return normalized
 
-    front_values = parse_list(play_series_value(play, "beats_front"))
-    if matches_category(front_values, str(situation["front_id"])):
-        score += add_score_reason(
-            reasons,
-            MATCHUP_SCORE_WEIGHTS["front_match"],
-            f"front fit: workable against {situation['front_id']}",
-        )
 
-    coverage_values = parse_list(play_series_value(play, "beats_coverage"))
-    if matches_category(coverage_values, str(situation["coverage_id"])):
-        score += add_score_reason(
-            reasons,
-            MATCHUP_SCORE_WEIGHTS["coverage_match"],
-            f"coverage fit: strong versus {situation['coverage_id']}",
-        )
+def box_label_from_count(box_count: int) -> str:
+    """Map numeric box count to the engine box labels."""
+    if box_count <= 5:
+        return "light_box"
+    if box_count == 6:
+        return "normal_box"
+    if box_count == 7:
+        return "heavy_box"
+    return "loaded_box"
 
-    box_values = parse_list(play_series_value(play, "beats_box"))
-    if matches_category(box_values, str(situation["box_label"])):
-        score += add_score_reason(
-            reasons,
-            MATCHUP_SCORE_WEIGHTS["box_match"],
-            f"box fit: favorable into {situation['box_label']}",
-        )
 
-    if play_series_value(play, "formation_id") == str(situation["formation_id"]):
-        score += add_score_reason(
-            reasons,
-            MATCHUP_SCORE_WEIGHTS["formation_match"],
-            f"formation fit: call is available from {situation['formation_id']}",
-        )
+def normalize_box_label(value: object) -> str:
+    """Normalize playbook box labels."""
+    key = normalize_text(value)
+    if key == "neutral_box":
+        return "normal_box"
+    return key
 
-    preferred_distance_values = parse_list(play_series_value(play, "preferred_down_distance"))
-    playbook_distance = {
-        "very_long" if value == "xlong" else value for value in preferred_distance_values
+
+def classify_distance_bucket(distance: object) -> tuple[str, int | None]:
+    """Normalize raw distance into short/medium/long."""
+    numeric_distance = parse_numeric(distance)
+    if numeric_distance is not None:
+        if numeric_distance <= 3:
+            return "short", numeric_distance
+        if numeric_distance <= 7:
+            return "medium", numeric_distance
+        return "long", numeric_distance
+
+    key = normalize_text(distance).replace("-", "_")
+    aliases = {
+        "short": "short",
+        "medium": "medium",
+        "long": "long",
+        "xlong": "long",
+        "very_long": "long",
     }
-    if matches_category(list(playbook_distance), str(situation["distance_bucket"])):
-        score += add_score_reason(
-            reasons,
-            MATCHUP_SCORE_WEIGHTS["distance_match"],
-            f"playbook fit: tagged for {describe_distance_bucket(str(situation['distance_bucket']))} distance",
-        )
+    bucket = aliases.get(key)
+    if bucket is None:
+        raise ValueError(f"Unsupported distance value: {distance}")
+    return bucket, None
 
-    preferred_field_zone_values = parse_list(play_series_value(play, "preferred_field_zone"))
-    normalized_field_zone_values = [
-        FIELD_ZONE_TO_PLAYBOOK_VALUE.get(value, value) for value in preferred_field_zone_values
-    ]
-    if matches_category(normalized_field_zone_values, str(situation["field_zone"])):
-        score += add_score_reason(
-            reasons,
-            MATCHUP_SCORE_WEIGHTS["field_zone_match"],
-            f"playbook fit: tagged for {situation['territory_label']}",
-        )
+
+def classify_down_distance_tag(down: int, distance_bucket: str) -> str:
+    """Map down and distance to the required down-distance tag."""
+    if down == 1:
+        return "early_down"
+    if down == 2:
+        return {
+            "short": "second_short",
+            "medium": "second_medium",
+            "long": "second_long",
+        }[distance_bucket]
+    if down == 3:
+        return {
+            "short": "third_short",
+            "medium": "third_medium",
+            "long": "third_long",
+        }[distance_bucket]
+    if down == 4:
+        return "fourth_short" if distance_bucket == "short" else "fourth_medium"
+    raise ValueError(f"Unsupported down value: {down}")
+
+
+def build_situation(
+    *,
+    down: int | str,
+    distance: str | int,
+    field_zone: str,
+    formation_id: str | None = None,
+    front_id: str | None = None,
+    coverage_id: str | None = None,
+    box_count: int | str | None = None,
+    personnel: str | None = None,
+    opponent: str | None = None,
+) -> dict[str, str | int]:
+    """Create the normalized situation payload used by the recommender."""
+    numeric_down = parse_numeric(down)
+    if numeric_down is None:
+        raise ValueError(f"Unsupported down value: {down}")
+
+    distance_bucket, raw_distance = classify_distance_bucket(distance)
+    normalized_field_zone = normalize_field_zone(field_zone)
+
+    situation: dict[str, str | int] = {
+        "down": numeric_down,
+        "distance": raw_distance if raw_distance is not None else str(distance),
+        "distance_bucket": distance_bucket,
+        "down_distance_tag": classify_down_distance_tag(numeric_down, distance_bucket),
+        "field_zone": normalized_field_zone,
+    }
+
+    if formation_id is not None:
+        situation["formation_id"] = normalize_text(formation_id)
+    if front_id is not None:
+        situation["front_id"] = normalize_text(front_id)
+    if coverage_id is not None:
+        situation["coverage_id"] = normalize_text(coverage_id)
+        families = sorted(COVERAGE_FAMILY.get(normalize_text(coverage_id), set()))
+        if families:
+            situation["coverage_family"] = ";".join(families)
+    if box_count is not None:
+        numeric_box = int(box_count)
+        situation["box_count"] = numeric_box
+        situation["box_label"] = box_label_from_count(numeric_box)
+    if personnel is not None:
+        situation["personnel"] = normalize_text(personnel)
+    if opponent is not None:
+        situation["opponent"] = str(opponent)
+    return situation
+
+
+def infer_play_tags(play: pd.Series) -> set[str]:
+    """Build normalized semantic tags from the play schema."""
+    tags = set(parse_list(play_series_value(play, "tags")))
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    play_family = normalize_text(play_series_value(play, "play_family"))
+    run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    run_modifier = normalize_text(play_series_value(play, "run_modifier"))
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    pass_modifier = normalize_text(play_series_value(play, "pass_modifier"))
+    protection = normalize_text(play_series_value(play, "protection"))
+    rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+    play_action = normalize_text(play_series_value(play, "play_action")) == "true"
+
+    for value in {
+        play_type,
+        play_family,
+        run_scheme,
+        run_modifier,
+        pass_concept,
+        pass_modifier,
+        protection,
+    }:
+        if value and value != "none":
+            tags.add(value)
+
+    if play_type == "run":
+        tags.add("run")
+    if play_type == "pass":
+        tags.add("pass")
+    if play_type == "screen" or play_family == "screen" or pass_concept in SCREEN_CONCEPTS:
+        tags.update({"screen", "quick_game"})
+    if pass_concept in QUICK_GAME_CONCEPTS:
+        tags.add("quick_game")
+    if run_scheme in GAP_SCHEMES:
+        tags.add("gap_scheme")
+    if run_scheme in ZONE_SCHEMES:
+        tags.add("zone_run")
+    if run_scheme in INSIDE_RUN_SCHEMES or "inside_run" in tags:
+        tags.add("inside_run")
+    if run_scheme in PERIMETER_RUN_SCHEMES or "outside_run" in tags or "perimeter_run" in tags:
+        tags.add("perimeter_run")
+    if rpo_tag and rpo_tag != "none":
+        tags.update({"rpo", rpo_tag})
+    if play_action:
+        tags.add("play_action")
+    if pass_concept in DEEP_SHOT_CONCEPTS or "deep_shot" in tags or "shot" in tags or "vertical" in tags:
+        tags.add("deep_shot")
+    if pass_concept in SLOW_DEVELOPING_CONCEPTS or "slow_developing" in tags:
+        tags.add("slow_developing")
+    if "red_zone" in tags:
+        tags.add("redzone")
+    if "man_beater" in tags or pass_concept == "mesh":
+        tags.add("man_beater")
+    if "zone_beater" in tags:
+        tags.add("zone_beater")
+    return tags
+
+
+def normalize_preferred_down_distance(play: pd.Series) -> set[str]:
+    """Normalize playbook down-distance values."""
+    values = set(parse_list(play_series_value(play, "preferred_down_distance")))
+    normalized: set[str] = set()
+    for value in values:
+        if value == "xlong":
+            normalized.add("long")
+        else:
+            normalized.add(value)
+    return normalized
+
+
+def normalize_preferred_field_zones(play: pd.Series) -> set[str]:
+    """Normalize playbook field-zone values."""
+    values = set(parse_list(play_series_value(play, "preferred_field_zone")))
+    normalized: set[str] = set()
+    for value in values:
+        if value == "any":
+            normalized.add("any")
+            continue
+        normalized.add(normalize_field_zone(value))
+    return normalized
+
+
+def normalize_beats_box(play: pd.Series) -> set[str]:
+    """Normalize playbook box answers."""
+    return {normalize_box_label(value) for value in parse_list(play_series_value(play, "beats_box"))}
+
+
+def exact_down_distance_match(play: pd.Series, situation: Situation) -> bool:
+    """Return whether the play has an exact down-distance tag match."""
+    return str(situation["down_distance_tag"]) in normalize_preferred_down_distance(play)
+
+
+def exact_field_zone_match(play: pd.Series, situation: Situation) -> bool:
+    """Return whether the play has an exact field-zone match."""
+    return str(situation["field_zone"]) in normalize_preferred_field_zones(play)
+
+
+def exact_defensive_match_count(play: pd.Series, situation: Situation) -> int:
+    """Count exact front, coverage, and box matches for tie-breaking."""
+    count = 0
+    front_id = normalize_text(situation.get("front_id"))
+    coverage_id = normalize_text(situation.get("coverage_id"))
+    box_label = normalize_text(situation.get("box_label"))
+    if front_id and front_id in parse_list(play_series_value(play, "beats_front")):
+        count += 1
+    if coverage_id and coverage_id in parse_list(play_series_value(play, "beats_coverage")):
+        count += 1
+    if box_label and box_label in normalize_beats_box(play):
+        count += 1
+    return count
+
+
+def score_down_distance(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score situational fit for down and distance."""
+    preferred = normalize_preferred_down_distance(play)
+    tag = str(situation["down_distance_tag"])
+    down = int(situation["down"])
+    bucket = str(situation["distance_bucket"])
+    reasons: list[str] = []
+
+    if tag in preferred:
+        return 30.0, [f"+30 down-distance: exact match {tag}"]
+
+    if tag == "third_short":
+        if "fourth_short" in preferred:
+            return 22.0, ["+22 down-distance: fourth_short is compatible with third_short"]
+        if "second_short" in preferred:
+            return 18.0, ["+18 down-distance: second_short is compatible with third_short"]
+    if tag == "fourth_short" and "third_short" in preferred:
+        return 22.0, ["+22 down-distance: third_short is compatible with fourth_short"]
+
+    if "early_down" in preferred:
+        if down == 1:
+            return 30.0, ["+30 down-distance: early_down fit on 1st down"]
+        if down == 2:
+            return 24.0, ["+24 down-distance: early_down remains strong on 2nd down"]
+        return 8.0, [f"+8 down-distance: early_down has limited carryover on down {down}"]
+
+    if bucket in preferred or (
+        bucket in {"medium", "long"}
+        and preferred & MEDIUM_LONG_TAGS
+    ):
+        return 15.0, [f"+15 down-distance: related {bucket} situation fit"]
+
+    tags = infer_play_tags(play)
+    if tag == "third_short" and "third_long" in preferred:
+        return -10.0, ["-10 down-distance: third_long play is a bad mismatch for third_short"]
+    if tag == "fourth_short" and "deep_shot" in tags:
+        return -15.0, ["-15 down-distance: deep_shot is a poor fourth_short answer"]
+    if tag == "third_long" and (
+        "early_down" in preferred or "short" in preferred or preferred & SHORT_TAGS
+    ):
+        return -12.0, ["-12 down-distance: short-yardage profile is a bad mismatch for third_long"]
+
+    return 0.0, []
+
+
+def score_field_zone(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score territory fit."""
+    preferred = normalize_preferred_field_zones(play)
+    field_zone = str(situation["field_zone"])
+
+    if field_zone in preferred:
+        return 20.0, [f"+20 field-zone: exact match {field_zone}"]
+    if "any" in preferred:
+        return 9.0, ["+9 field-zone: any zone flexibility"]
+    if preferred & RELATED_ZONES.get(field_zone, set()):
+        return 12.0, [f"+12 field-zone: related zone fit for {field_zone}"]
+    if preferred and "open_field" not in preferred:
+        return -8.0, [f"-8 field-zone: mismatch for {field_zone}"]
+    return 0.0, []
+
+
+def coverage_families(value: str) -> set[str]:
+    """Return normalized coverage families for a label."""
+    return set(COVERAGE_FAMILY.get(value, set()))
+
+
+def score_defensive_structure(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score front, coverage, and box fit."""
+    score = 0.0
+    reasons: list[str] = []
+
+    front_id = normalize_text(situation.get("front_id"))
+    if front_id:
+        front_values = parse_list(play_series_value(play, "beats_front"))
+        if front_id in front_values:
+            score += add_reason(reasons, 7.0, f"front: beats {front_id}")
+        elif "any" in front_values:
+            score += add_reason(reasons, 3.0, f"front: any front answer includes {front_id}")
+
+    coverage_id = normalize_text(situation.get("coverage_id"))
+    if coverage_id:
+        coverage_values = parse_list(play_series_value(play, "beats_coverage"))
+        if coverage_id in coverage_values:
+            score += add_reason(reasons, 7.0, f"coverage: exact {coverage_id} match")
+        else:
+            situation_families = coverage_families(coverage_id)
+            family_match = sorted(
+                value
+                for value in coverage_values
+                if coverage_families(value) & situation_families or value in situation_families
+            )
+            if family_match:
+                score += add_reason(
+                    reasons,
+                    4.0,
+                    f"coverage: family match via {family_match[0]}",
+                )
+            elif "any" in coverage_values:
+                score += add_reason(reasons, 2.0, "coverage: any coverage answer")
+
+    box_label = normalize_text(situation.get("box_label"))
+    if box_label:
+        box_values = normalize_beats_box(play)
+        if box_label in box_values:
+            score += add_reason(reasons, 6.0, f"box: exact {box_label} match")
+        elif box_values & RELATED_BOXES.get(box_label, set()):
+            score += add_reason(reasons, 3.0, f"box: related fit for {box_label}")
 
     return score, reasons
 
 
-def score_play(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
-    """Score a play against the current situation and collect explainable reasons."""
-    situational_score, situational_reasons = score_situational_fit(play, situation)
-    matchup_score, matchup_reasons = score_matchup_fit(play, situation)
-    return situational_score + matchup_score, [*situational_reasons, *matchup_reasons]
+def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score tactical football fit from play traits and situation context."""
+    score = 0.0
+    reasons: list[str] = []
+    tags = infer_play_tags(play)
+    field_zone = str(situation["field_zone"])
+    down_distance_tag = str(situation["down_distance_tag"])
+    coverage_id = normalize_text(situation.get("coverage_id"))
+    box_label = normalize_text(situation.get("box_label"))
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+
+    is_short = down_distance_tag in {"second_short", "third_short", "fourth_short"}
+    is_redzone = field_zone == "redzone"
+    is_goal_line = field_zone == "goal_line"
+
+    if is_short:
+        if "inside_run" in tags:
+            score += add_reason(reasons, 4.0, "tactical: inside_run fits short yardage")
+        if "gap_scheme" in tags:
+            score += add_reason(reasons, 4.0, "tactical: gap_scheme fits short yardage")
+        if "quick_game" in tags:
+            score += add_reason(reasons, 3.0, "tactical: quick_game fits short yardage")
+        if rpo_tag and rpo_tag != "none":
+            score += add_reason(reasons, 3.0, "tactical: rpo is useful in short yardage")
+        if "play_action" in tags and "deep_shot" not in tags and "slow_developing" not in tags:
+            score += add_reason(reasons, 2.0, "tactical: play_action is viable in short yardage")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, -6.0, "tactical: deep_shot is risky in short yardage")
+        if "slow_developing" in tags:
+            score += add_reason(reasons, -5.0, "tactical: slow_developing call hurts short yardage")
+
+    if is_redzone:
+        if "redzone" in tags:
+            score += add_reason(reasons, 4.0, "tactical: redzone tag fits condensed field")
+        if "quick_game" in tags:
+            score += add_reason(reasons, 3.0, "tactical: quick_game is useful in redzone")
+        if "inside_run" in tags:
+            score += add_reason(reasons, 3.0, "tactical: inside_run works in redzone")
+        if "play_action" in tags:
+            score += add_reason(reasons, 3.0, "tactical: play_action stresses redzone defenders")
+        if rpo_tag and rpo_tag != "none":
+            score += add_reason(reasons, 3.0, "tactical: rpo is useful in redzone")
+        if {"rub", "man_beater"} & tags:
+            score += add_reason(reasons, 3.0, "tactical: rub/man_beater traits help in redzone")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, -6.0, "tactical: deep_shot is risky in redzone")
+        if "slow_developing" in tags:
+            score += add_reason(reasons, -5.0, "tactical: slow_developing concept is tough in redzone")
+
+    if is_goal_line:
+        if "inside_run" in tags:
+            score += add_reason(reasons, 5.0, "tactical: inside_run fits goal_line")
+        if "gap_scheme" in tags:
+            score += add_reason(reasons, 4.0, "tactical: gap_scheme fits goal_line")
+        if "quick_game" in tags:
+            score += add_reason(reasons, 4.0, "tactical: quick_game fits goal_line")
+        if "play_action" in tags:
+            score += add_reason(reasons, 3.0, "tactical: play_action can punish goal_line trigger")
+        if rpo_tag and rpo_tag != "none":
+            score += add_reason(reasons, 3.0, "tactical: rpo is viable at goal_line")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, -8.0, "tactical: deep_shot is a poor goal_line answer")
+
+    if box_label in {"heavy_box", "loaded_box"}:
+        if "play_action" in tags:
+            score += add_reason(reasons, 4.0, f"tactical: play_action is useful against {box_label}")
+        if rpo_tag and rpo_tag != "none":
+            score += add_reason(reasons, 4.0, f"tactical: rpo is useful against {box_label}")
+        if "perimeter_run" in tags:
+            score += add_reason(reasons, 3.0, f"tactical: perimeter_run can punish {box_label}")
+        if "quick_game" in tags:
+            score += add_reason(reasons, 3.0, f"tactical: quick_game is useful against {box_label}")
+        if "screen" in tags:
+            score += add_reason(reasons, 3.0, f"tactical: screen is useful against {box_label}")
+        if "inside_run" in tags and not (normalize_beats_box(play) & {"heavy_box", "loaded_box"}):
+            score += add_reason(reasons, -4.0, f"tactical: inside_run lacks proven fit versus {box_label}")
+
+    if box_label == "light_box":
+        if "inside_run" in tags:
+            score += add_reason(reasons, 5.0, "tactical: inside_run should attack a light_box")
+        if "gap_scheme" in tags:
+            score += add_reason(reasons, 4.0, "tactical: gap_scheme can punish a light_box")
+        if "zone_run" in tags:
+            score += add_reason(reasons, 3.0, "tactical: zone_run is useful versus a light_box")
+        if run_scheme in {"power", "counter"}:
+            score += add_reason(reasons, 3.0, f"tactical: {run_scheme} fits a light_box")
+
+    if coverage_id == "cover3":
+        if pass_concept == "flood" or "flood" in tags:
+            score += add_reason(reasons, 3.0, "tactical: flood is strong versus cover3")
+        if pass_concept == "curl_flat" or "curl_flat" in tags:
+            score += add_reason(reasons, 3.0, "tactical: curl_flat is strong versus cover3")
+        if pass_concept == "seams" or "seams" in tags:
+            score += add_reason(reasons, 3.0, "tactical: seams can stress cover3")
+        if "play_action" in tags:
+            score += add_reason(reasons, 2.0, "tactical: play_action can help versus cover3")
+
+    coverage_fams = coverage_families(coverage_id)
+    if "man" in coverage_fams or coverage_id in {"cover0", "cover1", "man"}:
+        if pass_concept == "mesh" or "mesh" in tags:
+            score += add_reason(reasons, 4.0, "tactical: mesh is strong versus man")
+        if "rub" in tags:
+            score += add_reason(reasons, 4.0, "tactical: rub concept fits man coverage")
+        if "man_beater" in tags:
+            score += add_reason(reasons, 4.0, "tactical: man_beater traits fit man coverage")
+        if "quick_game" in tags:
+            score += add_reason(reasons, 3.0, "tactical: quick_game is useful versus man")
+
+    if "zone" in coverage_fams or coverage_id in {"cover2", "cover3", "soft_zone", "zone"}:
+        if "zone_beater" in tags:
+            score += add_reason(reasons, 3.0, "tactical: zone_beater traits fit zone coverage")
+        if pass_concept == "spacing" or "spacing" in tags:
+            score += add_reason(reasons, 3.0, "tactical: spacing fits zone coverage")
+        if pass_concept == "curl_flat" or "curl_flat" in tags:
+            score += add_reason(reasons, 3.0, "tactical: curl_flat fits zone coverage")
+        if pass_concept == "snag" or "snag" in tags:
+            score += add_reason(reasons, 3.0, "tactical: snag fits zone coverage")
+
+    if coverage_id == "cover0":
+        if "quick_game" in tags:
+            score += add_reason(reasons, 5.0, "tactical: quick_game is critical versus cover0")
+        if "man_beater" in tags:
+            score += add_reason(reasons, 5.0, "tactical: man_beater traits help versus cover0")
+        if "screen" in tags:
+            score += add_reason(reasons, 4.0, "tactical: screen can punish cover0 pressure")
+        if "slow_developing" in tags:
+            score += add_reason(reasons, -8.0, "tactical: slow_developing concept is dangerous versus cover0")
+
+    return clamp(score, -10.0, 15.0), reasons
+
+
+def score_formation_personnel(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score formation and personnel alignment."""
+    score = 0.0
+    reasons: list[str] = []
+    play_personnel = normalize_text(play_series_value(play, "personnel"))
+    play_formation = normalize_text(play_series_value(play, "formation_id"))
+    situation_personnel = normalize_text(situation.get("personnel"))
+    situation_formation = normalize_text(situation.get("formation_id"))
+
+    if situation_personnel:
+        if play_personnel == situation_personnel:
+            score += add_reason(reasons, 5.0, f"formation/personnel: personnel match {situation_personnel}")
+        else:
+            score += add_reason(reasons, -3.0, f"formation/personnel: personnel mismatch vs {situation_personnel}")
+
+    if situation_formation:
+        if play_formation == situation_formation:
+            score += add_reason(reasons, 5.0, f"formation/personnel: formation match {situation_formation}")
+        else:
+            score += add_reason(reasons, -8.0, f"formation/personnel: formation mismatch vs {situation_formation}")
+
+    return score, reasons
+
+
+def score_risk_reward(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score risk/reward profile for the situation."""
+    score = 0.0
+    reasons: list[str] = []
+    tags = infer_play_tags(play)
+    down_distance_tag = str(situation["down_distance_tag"])
+    field_zone = str(situation["field_zone"])
+
+    if down_distance_tag in {"third_short", "fourth_short"}:
+        if {"inside_run", "quick_game", "rpo", "gap_scheme"} & tags:
+            score += add_reason(reasons, 3.0, "risk-reward: efficient answer for short conversion")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, -5.0, "risk-reward: deep_shot is too volatile here")
+
+    if int(situation["down"]) == 1 and field_zone == "open_field":
+        if "play_action" in tags:
+            score += add_reason(reasons, 3.0, "risk-reward: play_action is attractive on 1st down open field")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, 2.0, "risk-reward: deep_shot is acceptable on 1st down open field")
+
+    if field_zone == "redzone":
+        if {"quick_game", "rpo", "play_action"} & tags:
+            score += add_reason(reasons, 3.0, "risk-reward: efficient redzone profile")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, -4.0, "risk-reward: deep_shot loses value in redzone")
+
+    if field_zone == "goal_line":
+        if {"inside_run", "quick_game", "rpo"} & tags:
+            score += add_reason(reasons, 4.0, "risk-reward: high-percentage goal_line profile")
+        if "deep_shot" in tags:
+            score += add_reason(reasons, -5.0, "risk-reward: deep_shot is a poor goal_line gamble")
+
+    return clamp(score, -5.0, 5.0), reasons
+
+
+def score_play(play: pd.Series, situation: Situation) -> Recommendation:
+    """Score a play with component breakdown and explainable reasons."""
+    down_distance_score, down_distance_reasons = score_down_distance(play, situation)
+    field_zone_score, field_zone_reasons = score_field_zone(play, situation)
+    defensive_structure_score, defensive_structure_reasons = score_defensive_structure(
+        play, situation
+    )
+    tactical_fit_score, tactical_fit_reasons = score_tactical_fit(play, situation)
+    formation_personnel_score, formation_personnel_reasons = score_formation_personnel(
+        play, situation
+    )
+    risk_reward_score, risk_reward_reasons = score_risk_reward(play, situation)
+
+    base_score = clamp(
+        down_distance_score
+        + field_zone_score
+        + defensive_structure_score
+        + tactical_fit_score
+        + formation_personnel_score
+        + risk_reward_score,
+        0.0,
+        100.0,
+    )
+    reasons = [
+        *down_distance_reasons,
+        *field_zone_reasons,
+        *defensive_structure_reasons,
+        *tactical_fit_reasons,
+        *formation_personnel_reasons,
+        *risk_reward_reasons,
+    ]
+
+    concept_scheme = normalize_text(play_series_value(play, "pass_concept"))
+    if not concept_scheme or concept_scheme == "none":
+        concept_scheme = normalize_text(play_series_value(play, "run_scheme"))
+
+    return Recommendation(
+        play_id=play_series_value(play, "play_id"),
+        play_name=play_series_value(play, "play_name"),
+        score=base_score,
+        base_score=base_score,
+        reasons=reasons,
+        formation_id=play_series_value(play, "formation_id"),
+        personnel=play_series_value(play, "personnel"),
+        play_type=play_series_value(play, "play_type"),
+        concept_scheme=concept_scheme,
+        component_scores={
+            "down_distance": down_distance_score,
+            "field_zone": field_zone_score,
+            "defensive_structure": defensive_structure_score,
+            "tactical_fit": tactical_fit_score,
+            "formation_personnel": formation_personnel_score,
+            "risk_reward": risk_reward_score,
+        },
+        tie_breakers={
+            "exact_down_distance_match": exact_down_distance_match(play, situation),
+            "exact_field_zone_match": exact_field_zone_match(play, situation),
+            "exact_defensive_structure_match_count": exact_defensive_match_count(
+                play, situation
+            ),
+            "tactical_fit_score": tactical_fit_score,
+        },
+        used_tendencies=False,
+    )
 
 
 def aggregate_box_probabilities(
     probabilities: Mapping[str, float] | None,
 ) -> dict[str, float]:
-    """Normalize numeric or categorical box-count probabilities into box labels."""
+    """Normalize box-count probabilities into the engine box labels."""
     aggregated = {
         "light_box": 0.0,
-        "neutral_box": 0.0,
+        "normal_box": 0.0,
         "heavy_box": 0.0,
         "loaded_box": 0.0,
     }
     if not probabilities:
         return aggregated
-
     for raw_value, probability in probabilities.items():
-        value = str(raw_value)
-        if value in aggregated:
-            aggregated[value] += float(probability)
+        key = normalize_text(raw_value)
+        if key in aggregated:
+            aggregated[key] += float(probability)
             continue
-        try:
-            label = map_box_count(int(value))
-        except ValueError:
-            continue
-        aggregated[label] += float(probability)
+        numeric_value = parse_numeric(raw_value)
+        if numeric_value is not None:
+            aggregated[box_label_from_count(numeric_value)] += float(probability)
     return aggregated
 
 
@@ -722,149 +766,83 @@ def apply_tendency_adjustments(
     play: pd.Series,
     tendencies: TendencySnapshot | None,
 ) -> tuple[float, list[str]]:
-    """Calculate additive score adjustments from opponent tendency probabilities."""
+    """Apply lightweight additive tendency adjustments on top of the base score."""
     if not tendencies:
         return 0.0, []
 
     tags = infer_play_tags(play)
     adjustment = 0.0
     reasons: list[str] = []
+    coverage_values = parse_list(play_series_value(play, "beats_coverage"))
 
     coverage_probabilities = tendencies.get("coverage")
     if coverage_probabilities:
-        for coverage_id in parse_list(play_series_value(play, "beats_coverage")):
-            if coverage_id in {"any", "none"}:
+        for coverage_id in coverage_values:
+            if coverage_id in {"any", "none", "man", "zone", "match"}:
                 continue
             probability = float(coverage_probabilities.get(coverage_id, 0.0))
             if probability > 0:
-                delta = probability * TENDENCY_SCORE_WEIGHTS["coverage_match"]
-                adjustment += add_score_reason(
+                adjustment += add_reason(
                     reasons,
-                    delta,
-                    f"tendency boost: opponent shows {coverage_id} often in this situation",
+                    clamp(probability * 6.0, 0.0, 6.0),
+                    f"tendency: opponent shows {coverage_id} often",
                 )
 
     box_probabilities = aggregate_box_probabilities(tendencies.get("box_count"))
-    play_box_values = parse_list(play_series_value(play, "beats_box"))
-    for box_label in ("light_box", "neutral_box", "heavy_box", "loaded_box"):
-        probability = box_probabilities.get(box_label, 0.0)
-        if probability > 0 and box_label in play_box_values:
-            delta = probability * TENDENCY_SCORE_WEIGHTS["box_match"]
-            adjustment += add_score_reason(
+    for box_label, probability in box_probabilities.items():
+        if probability <= 0:
+            continue
+        if box_label in normalize_beats_box(play):
+            adjustment += add_reason(
                 reasons,
-                delta,
-                f"tendency boost: opponent leans to {box_label}",
+                clamp(probability * 3.0, 0.0, 3.0),
+                f"tendency: opponent leans toward {box_label}",
             )
 
     pressure_probabilities = tendencies.get("pressure")
-    pressure_yes_probability = 0.0
-    if pressure_probabilities:
-        pressure_yes_probability = float(pressure_probabilities.get("yes", 0.0))
-
-    if pressure_yes_probability > 0 and "pressure_answer" in tags:
-        delta = pressure_yes_probability * TENDENCY_SCORE_WEIGHTS["pressure_answer"]
-        adjustment += add_score_reason(
-            reasons,
-            delta,
-            "tendency boost: pressure profile favors quick answers, screens, and RPOs",
-        )
-
-    if pressure_yes_probability > 0 and "slow_developing" in tags and "pressure_answer" not in tags:
-        delta = pressure_yes_probability * TENDENCY_SCORE_WEIGHTS["pressure_risk"]
-        adjustment += add_score_reason(
-            reasons,
-            delta,
-            "pressure risk: long-developing concept against likely pressure",
-        )
+    if pressure_probabilities and float(pressure_probabilities.get("yes", 0.0)) > 0:
+        pressure_probability = float(pressure_probabilities["yes"])
+        if {"quick_game", "screen", "rpo"} & tags:
+            adjustment += add_reason(
+                reasons,
+                clamp(pressure_probability * 5.0, 0.0, 5.0),
+                "tendency: pressure profile favors quick answers",
+            )
+        if "slow_developing" in tags:
+            adjustment += add_reason(
+                reasons,
+                -clamp(pressure_probability * 4.0, 0.0, 4.0),
+                "tendency: pressure profile hurts slow-developing concepts",
+            )
 
     heavy_box_probability = (
-        box_probabilities.get("heavy_box", 0.0)
-        + box_probabilities.get("loaded_box", 0.0)
+        box_probabilities.get("heavy_box", 0.0) + box_probabilities.get("loaded_box", 0.0)
     )
     light_box_probability = box_probabilities.get("light_box", 0.0)
+    heavy_box_fit = bool(normalize_beats_box(play) & {"heavy_box", "loaded_box"})
 
-    if "pure_run" in tags:
-        if heavy_box_probability > 0:
-            delta = heavy_box_probability * TENDENCY_SCORE_WEIGHTS["heavy_box_run"]
-            adjustment += add_score_reason(
+    if heavy_box_probability > 0:
+        if {"play_action", "rpo", "quick_game", "screen"} & tags:
+            adjustment += add_reason(
                 reasons,
-                delta,
-                "tendency penalty: heavy box look reduces pure run value",
+                clamp(heavy_box_probability * 7.0, 0.0, 7.0),
+                "tendency: heavy box profile invites pass or constraint answers",
             )
-        if light_box_probability > 0:
-            delta = light_box_probability * TENDENCY_SCORE_WEIGHTS["light_box_run"]
-            adjustment += add_score_reason(
+        if "inside_run" in tags and not heavy_box_fit:
+            adjustment += add_reason(
                 reasons,
-                delta,
-                "tendency boost: light box improves viable runs",
+                -clamp(heavy_box_probability * 9.0, 0.0, 9.0),
+                "tendency: heavy box profile hurts inside runs without box fit",
             )
-    elif {"screen", "rpo", "attacks_sticks"} & tags and heavy_box_probability > 0:
-        delta = heavy_box_probability * TENDENCY_SCORE_WEIGHTS["heavy_box_pass"]
-        adjustment += add_score_reason(
+
+    if light_box_probability > 0 and "inside_run" in tags:
+        adjustment += add_reason(
             reasons,
-            delta,
-            "tendency boost: heavy box invites pass or RPO answers",
+            clamp(light_box_probability * 5.0, 0.0, 5.0),
+            "tendency: light box profile improves inside runs",
         )
 
     return adjustment, reasons
-
-
-def apply_guardrail_adjustments(
-    play: pd.Series,
-    situation: Situation,
-    viable_alternatives_exist: bool,
-) -> tuple[float, list[str]]:
-    """Apply explicit penalties for nonsensical top-call candidates."""
-    tags = infer_play_tags(play)
-    situation_key = str(situation["combined_situation"])
-    territory = str(situation["territory"])
-    adjustment = 0.0
-    reasons: list[str] = []
-
-    if viable_alternatives_exist and "pure_run" in tags and "draw" not in tags:
-        if situation_key == "money_down_very_long":
-            adjustment += add_score_reason(
-                reasons,
-                GUARDRAIL_SCORE_WEIGHTS["money_very_long_pure_run"],
-                "guardrail: pure runs cannot be top calls on 3rd/4th & very long when pass answers exist",
-            )
-        elif situation_key == "money_down_long":
-            adjustment += add_score_reason(
-                reasons,
-                GUARDRAIL_SCORE_WEIGHTS["money_long_pure_run"],
-                "guardrail: pure runs are kept below pass answers on 3rd/4th & long",
-            )
-
-    if viable_alternatives_exist and territory == "backed_up" and "shot" in tags and "play_action" not in tags:
-        adjustment += add_score_reason(
-            reasons,
-            GUARDRAIL_SCORE_WEIGHTS["backed_up_shot"],
-            "guardrail: backed-up territory should not prioritize deep low-percentage shots",
-        )
-
-    if territory in {"red_zone", "goal_line"} and "vertical" in tags:
-        adjustment += add_score_reason(
-            reasons,
-            GUARDRAIL_SCORE_WEIGHTS["red_zone_vertical"],
-            "guardrail: condensed field removes most deep vertical value here",
-        )
-
-    return adjustment, reasons
-
-
-def has_viable_non_run_alternative(playbook: pd.DataFrame, situation: Situation) -> bool:
-    """Check whether the playbook contains pass/RPO/screen answers for the situation."""
-    situation_key = str(situation["combined_situation"])
-    if situation_key not in {"money_down_long", "money_down_very_long"}:
-        return False
-
-    for _, play in playbook.iterrows():
-        tags = infer_play_tags(play)
-        if "pure_run" not in tags:
-            return True
-        if "draw" in tags or "safe_call" in tags:
-            return True
-    return False
 
 
 def recommend_plays(
@@ -872,40 +850,50 @@ def recommend_plays(
     situation: Situation,
     *,
     tendencies: TendencySnapshot | None = None,
-    limit: int = 3,
-) -> list[dict[str, object]]:
+    top_n: int = 10,
+    min_score: float | None = None,
+    limit: int | None = None,
+) -> list[Recommendation]:
     """Score a playbook and return ranked recommendations."""
-    recommendations: list[dict[str, object]] = []
-    viable_alternatives_exist = has_viable_non_run_alternative(playbook, situation)
+    if limit is not None:
+        top_n = limit
 
-    for _, play in playbook.iterrows():
-        base_score, base_reasons = score_play(play, situation)
+    recommendations: list[Recommendation] = []
+
+    for index, (_, play) in enumerate(playbook.iterrows()):
+        recommendation = score_play(play, situation)
         tendency_adjustment, tendency_reasons = apply_tendency_adjustments(
             play, tendencies
         )
-        guardrail_adjustment, guardrail_reasons = apply_guardrail_adjustments(
-            play, situation, viable_alternatives_exist
+        final_score = clamp(
+            float(recommendation["base_score"]) + tendency_adjustment,
+            0.0,
+            100.0,
         )
-        total_score = float(base_score) + tendency_adjustment + guardrail_adjustment
+        recommendation["tendency_adjustment"] = tendency_adjustment
+        recommendation["score"] = final_score
+        recommendation["used_tendencies"] = tendencies is not None
+        recommendation["reasons"] = [*recommendation["reasons"], *tendency_reasons]
 
-        recommendations.append(
-            {
-                "play_name": play_series_value(play, "play_name"),
-                "play_id": play_series_value(play, "play_id"),
-                "score": total_score,
-                "base_score": base_score,
-                "tendency_adjustment": tendency_adjustment,
-                "guardrail_adjustment": guardrail_adjustment,
-                "reasons": [*base_reasons, *tendency_reasons, *guardrail_reasons],
-                "used_tendencies": tendencies is not None,
-            }
-        )
+        if min_score is not None and final_score < min_score:
+            continue
 
-    return sorted(
+        recommendation["_original_index"] = index
+        recommendations.append(recommendation)
+
+    ranked = sorted(
         recommendations,
         key=lambda play: (
             -float(play["score"]),
-            str(play["play_name"]),
-            str(play["play_id"]),
+            -int(bool(play["tie_breakers"]["exact_down_distance_match"])),
+            -int(bool(play["tie_breakers"]["exact_field_zone_match"])),
+            -int(play["tie_breakers"]["exact_defensive_structure_match_count"]),
+            -float(play["tie_breakers"]["tactical_fit_score"]),
+            int(play["_original_index"]),
         ),
-    )[:limit]
+    )
+
+    for recommendation in ranked:
+        recommendation.pop("_original_index", None)
+
+    return ranked[:top_n]

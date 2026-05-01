@@ -216,9 +216,16 @@ class OpponentTendencyTests(unittest.TestCase):
         inside_zone = next(play for play in recommendations if play["play_id"] == "inside_zone")
 
         self.assertNotIn("inside_zone", top_ids)
-        self.assertLess(inside_zone["score"], 0)
+        self.assertGreaterEqual(inside_zone["score"], 0)
+        self.assertLess(
+            inside_zone["score"],
+            next(play for play in recommendations if play["play_id"] == "screen")["score"],
+        )
         self.assertTrue(
-            any("guardrail" in reason or "pure run on 3rd/4th & very long" in reason for reason in inside_zone["reasons"])
+            any(
+                "third_long" in reason or "light box profile improves inside runs" in reason
+                for reason in inside_zone["reasons"]
+            )
         )
 
 

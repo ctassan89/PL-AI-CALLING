@@ -1,4 +1,4 @@
-"""Tests for football-realistic recommendation scoring."""
+"""Tests for the explainable recommendation scoring model."""
 
 from __future__ import annotations
 
@@ -18,191 +18,31 @@ if str(SRC_DIR) not in sys.path:
 from recommendation.engine import build_situation, recommend_plays, score_play
 
 
-def make_playbook() -> pd.DataFrame:
-    """Build a synthetic playbook with explicit semantic tags."""
-    rows = [
-        {
-            "play_id": "inside_zone",
-            "play_name": "Inside Zone",
-            "play_family": "run",
-            "play_type": "run",
-            "run_scheme": "inside_zone",
-            "run_modifier": "none",
-            "pass_concept": "none",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "even_4;odd_3",
-            "beats_coverage": "any",
-            "beats_box": "light_box;neutral_box",
-            "preferred_down_distance": "short;medium",
-            "preferred_field_zone": "own_territory;midfield",
-            "tags": "pure_run;inside_run",
-        },
-        {
-            "play_id": "duo",
-            "play_name": "Duo",
-            "play_family": "run",
-            "play_type": "run",
-            "run_scheme": "duo",
-            "run_modifier": "none",
-            "pass_concept": "none",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "even_4;odd_tite",
-            "beats_coverage": "any",
-            "beats_box": "neutral_box;heavy_box",
-            "preferred_down_distance": "short",
-            "preferred_field_zone": "redzone;goal_line",
-            "tags": "pure_run;inside_run;short_yardage;goal_line;red_zone",
-        },
-        {
-            "play_id": "draw",
-            "play_name": "RB Draw",
-            "play_family": "run",
-            "play_type": "run",
-            "run_scheme": "draw",
-            "run_modifier": "none",
-            "pass_concept": "none",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "odd_mint;even_over",
-            "beats_coverage": "any",
-            "beats_box": "light_box",
-            "preferred_down_distance": "long;xlong",
-            "preferred_field_zone": "midfield;opp_territory",
-            "tags": "pure_run;draw;safe_call",
-        },
-        {
-            "play_id": "slant_flat",
-            "play_name": "Slant Flat",
-            "play_family": "quick_game",
-            "play_type": "pass",
-            "run_scheme": "none",
-            "run_modifier": "none",
-            "pass_concept": "slant_flat",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "none",
-            "beats_coverage": "cover3;cover1",
-            "beats_box": "any",
-            "preferred_down_distance": "short;medium",
-            "preferred_field_zone": "any",
-            "tags": "quick_game;pressure_answer;safe_call;red_zone;goal_line",
-        },
-        {
-            "play_id": "mesh",
-            "play_name": "Mesh",
-            "play_family": "dropback",
-            "play_type": "pass",
-            "run_scheme": "none",
-            "run_modifier": "none",
-            "pass_concept": "mesh",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "none",
-            "beats_coverage": "cover1;cover2",
-            "beats_box": "any",
-            "preferred_down_distance": "medium;long;xlong",
-            "preferred_field_zone": "midfield;opp_territory",
-            "tags": "attacks_sticks",
-        },
-        {
-            "play_id": "flood",
-            "play_name": "Boot Flood",
-            "play_family": "boot",
-            "play_type": "pass",
-            "run_scheme": "outside_zone",
-            "run_modifier": "none",
-            "pass_concept": "flood",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "true",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "even_4;odd_3",
-            "beats_coverage": "cover3;cover1",
-            "beats_box": "neutral_box;heavy_box",
-            "preferred_down_distance": "medium;long;xlong",
-            "preferred_field_zone": "midfield;opp_territory;redzone",
-            "tags": "play_action;boot;attacks_sticks;red_zone",
-        },
-        {
-            "play_id": "verts",
-            "play_name": "Four Verts",
-            "play_family": "dropback",
-            "play_type": "pass",
-            "run_scheme": "none",
-            "run_modifier": "none",
-            "pass_concept": "four_verts",
-            "pass_modifier": "none",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "none",
-            "beats_coverage": "cover3;cover4_quarters",
-            "beats_box": "any",
-            "preferred_down_distance": "long;xlong",
-            "preferred_field_zone": "midfield;opp_territory",
-            "tags": "shot;vertical;slow_developing;attacks_sticks",
-        },
-        {
-            "play_id": "screen",
-            "play_name": "Now Screen",
-            "play_family": "screen",
-            "play_type": "screen",
-            "run_scheme": "none",
-            "run_modifier": "none",
-            "pass_concept": "screens",
-            "pass_modifier": "now_screen",
-            "rpo_tag": "none",
-            "play_action": "false",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "none",
-            "beats_coverage": "cover3",
-            "beats_box": "any",
-            "preferred_down_distance": "medium;long;xlong",
-            "preferred_field_zone": "any",
-            "tags": "screen;pressure_answer;safe_call",
-        },
-        {
-            "play_id": "rpo",
-            "play_name": "Glance RPO",
-            "play_family": "rpo",
-            "play_type": "rpo",
-            "run_scheme": "inside_zone",
-            "run_modifier": "none",
-            "pass_concept": "none",
-            "pass_modifier": "none",
-            "rpo_tag": "glance",
-            "play_action": "true",
-            "formation_id": "gun_11_2x2",
-            "personnel": "11",
-            "beats_front": "odd_tite;odd_3",
-            "beats_coverage": "cover3;cover1",
-            "beats_box": "heavy_box",
-            "preferred_down_distance": "short;medium;long",
-            "preferred_field_zone": "midfield;opp_territory;redzone",
-            "tags": "rpo;pressure_answer;short_yardage;red_zone",
-        },
-    ]
-    return pd.DataFrame(rows)
+def make_play(**overrides: object) -> dict[str, object]:
+    """Create a play row with sensible defaults for tests."""
+    play = {
+        "play_id": "play",
+        "play_name": "Play",
+        "play_family": "dropback",
+        "play_type": "pass",
+        "run_scheme": "none",
+        "run_modifier": "none",
+        "pass_concept": "spacing",
+        "pass_modifier": "none",
+        "protection": "6man",
+        "rpo_tag": "none",
+        "play_action": "false",
+        "formation_id": "gun_11_2x2",
+        "personnel": "11",
+        "beats_front": "any",
+        "beats_coverage": "any",
+        "beats_box": "any",
+        "preferred_down_distance": "early_down",
+        "preferred_field_zone": "any",
+        "tags": "",
+    }
+    play.update(overrides)
+    return play
 
 
 def ids(recommendations: list[dict[str, object]]) -> list[str]:
@@ -211,210 +51,300 @@ def ids(recommendations: list[dict[str, object]]) -> list[str]:
 
 
 class RecommendationEngineTests(unittest.TestCase):
-    """Exercise the redesigned football scoring rules."""
+    """Validate the modular football scoring rules."""
 
-    def setUp(self) -> None:
-        self.playbook = make_playbook()
-
-    def recommend(self, **kwargs: object) -> list[dict[str, object]]:
+    def recommend(
+        self,
+        plays: list[dict[str, object]],
+        **kwargs: object,
+    ) -> list[dict[str, object]]:
         situation = build_situation(
-            formation_id="gun_11_2x2",
-            front_id="even_4",
-            coverage_id="cover3",
-            box_count=6,
-            **kwargs,
+            down=kwargs.pop("down", 1),
+            distance=kwargs.pop("distance", 10),
+            field_zone=kwargs.pop("field_zone", "midfield"),
+            formation_id=kwargs.pop("formation_id", "gun_11_2x2"),
+            front_id=kwargs.pop("front_id", "odd_tite"),
+            coverage_id=kwargs.pop("coverage_id", "cover3"),
+            box_count=kwargs.pop("box_count", 6),
+            personnel=kwargs.pop("personnel", "11"),
         )
-        return recommend_plays(self.playbook, situation, limit=10)
+        self.assertFalse(kwargs)
+        return recommend_plays(pd.DataFrame(plays), situation, top_n=10)
 
-    def score(self, play_id: str, **kwargs: object) -> tuple[float, list[str]]:
+    def score(self, play: dict[str, object], **kwargs: object) -> dict[str, object]:
         situation = build_situation(
-            formation_id="gun_11_2x2",
-            front_id="even_4",
-            coverage_id="cover3",
-            box_count=6,
-            **kwargs,
+            down=kwargs.pop("down", 1),
+            distance=kwargs.pop("distance", 10),
+            field_zone=kwargs.pop("field_zone", "midfield"),
+            formation_id=kwargs.pop("formation_id", "gun_11_2x2"),
+            front_id=kwargs.pop("front_id", "odd_tite"),
+            coverage_id=kwargs.pop("coverage_id", "cover3"),
+            box_count=kwargs.pop("box_count", 6),
+            personnel=kwargs.pop("personnel", "11"),
         )
-        play = self.playbook.loc[self.playbook["play_id"] == play_id].iloc[0]
-        return score_play(play, situation)
+        self.assertFalse(kwargs)
+        return score_play(pd.Series(play), situation)
 
-    def test_first_and_ten_allows_balanced_run_and_pass(self) -> None:
-        recommendations = self.recommend(down=1, distance=10, field_zone="own_territory")
-        top_four = ids(recommendations[:4])
-        self.assertIn("inside_zone", top_four)
-        self.assertTrue({"slant_flat", "rpo"} & set(top_four))
+    def test_third_short_exact_match_beats_early_down(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="exact",
+                    preferred_down_distance="third_short",
+                ),
+                make_play(
+                    play_id="early",
+                    preferred_down_distance="early_down",
+                ),
+            ],
+            down=3,
+            distance=2,
+        )
+        self.assertEqual(ids(recommendations)[:2], ["exact", "early"])
 
-    def test_second_and_short_allows_aggressive_play_action(self) -> None:
-        recommendations = self.recommend(down=2, distance=2, field_zone="opp_territory")
-        top_three = ids(recommendations[:3])
-        self.assertIn("flood", top_three)
+    def test_fourth_short_penalizes_deep_shot(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="run",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="duo",
+                    pass_concept="none",
+                    preferred_down_distance="fourth_short",
+                    tags="inside_run;gap_scheme",
+                    beats_box="heavy_box;loaded_box",
+                ),
+                make_play(
+                    play_id="shot",
+                    preferred_down_distance="fourth_short",
+                    pass_concept="four_verts",
+                    tags="deep_shot;slow_developing",
+                ),
+            ],
+            down=4,
+            distance=1,
+        )
+        deep_shot_play = next(play for play in recommendations if play["play_id"] == "shot")
+        self.assertEqual(ids(recommendations)[:2], ["run", "shot"])
+        self.assertTrue(any("deep_shot" in reason for reason in deep_shot_play["reasons"]))
 
-    def test_second_and_medium_stays_balanced(self) -> None:
-        recommendations = self.recommend(down=2, distance=5, field_zone="midfield")
-        top_five = set(ids(recommendations[:5]))
-        self.assertIn("inside_zone", top_five)
-        self.assertTrue({"slant_flat", "mesh", "rpo"} & top_five)
+    def test_redzone_specific_beats_any(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="specific", preferred_field_zone="redzone"),
+                make_play(play_id="any", preferred_field_zone="any"),
+            ],
+            field_zone="redzone",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["specific", "any"])
 
-    def test_second_and_long_prefers_efficient_answers_over_pure_run(self) -> None:
-        recommendations = self.recommend(down=2, distance=8, field_zone="midfield")
-        order = ids(recommendations)
-        self.assertLess(order.index("screen"), order.index("inside_zone"))
-        self.assertLess(order.index("mesh"), order.index("inside_zone"))
+    def test_goal_line_beats_redzone_in_goal_line(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="goal", preferred_field_zone="goal_line"),
+                make_play(play_id="red", preferred_field_zone="redzone"),
+            ],
+            field_zone="goal_line",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["goal", "red"])
 
-    def test_third_and_short_favors_short_yardage_and_quick_game(self) -> None:
-        recommendations = self.recommend(down=3, distance=1, field_zone="midfield")
-        top_four = set(ids(recommendations[:4]))
-        self.assertIn("duo", top_four)
-        self.assertTrue({"slant_flat", "rpo"} & top_four)
-        self.assertNotEqual(ids(recommendations)[0], "verts")
+    def test_exact_coverage_beats_family_match(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="exact", beats_coverage="cover3"),
+                make_play(play_id="family", beats_coverage="zone"),
+            ],
+            coverage_id="cover3",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["exact", "family"])
 
-    def test_third_and_medium_favors_conversion_concepts(self) -> None:
-        recommendations = recommend_plays(
-            self.playbook,
-            build_situation(
-                down=3,
-                distance=5,
-                field_zone="midfield",
-                formation_id="gun_11_2x2",
-                front_id="even_4",
-                coverage_id="cover2",
-                box_count=6,
+    def test_cover3_boosts_flood_or_curl_flat(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="flood",
+                    pass_concept="flood",
+                    preferred_down_distance="second_medium",
+                ),
+                make_play(
+                    play_id="generic",
+                    pass_concept="spacing",
+                    preferred_down_distance="second_medium",
+                ),
+            ],
+            down=2,
+            distance=5,
+            coverage_id="cover3",
+        )
+        flood = next(play for play in recommendations if play["play_id"] == "flood")
+        self.assertEqual(ids(recommendations)[:2], ["flood", "generic"])
+        self.assertTrue(any("cover3" in reason and "flood" in reason for reason in flood["reasons"]))
+
+    def test_heavy_box_boosts_play_action_or_rpo(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="action",
+                    play_action="true",
+                    pass_concept="flood",
+                    beats_box="heavy_box",
+                    preferred_down_distance="second_medium",
+                ),
+                make_play(
+                    play_id="dropback",
+                    play_action="false",
+                    pass_concept="spacing",
+                    preferred_down_distance="second_medium",
+                ),
+            ],
+            down=2,
+            distance=5,
+            box_count=7,
+        )
+        action = next(play for play in recommendations if play["play_id"] == "action")
+        self.assertEqual(ids(recommendations)[:2], ["action", "dropback"])
+        self.assertTrue(any("heavy_box" in reason for reason in action["reasons"]))
+
+    def test_loaded_box_penalizes_inside_run_without_box_fit(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="bad_run",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="inside_zone",
+                    pass_concept="none",
+                    beats_box="light_box",
+                    preferred_down_distance="second_medium",
+                    tags="inside_run",
+                ),
+                make_play(
+                    play_id="answer",
+                    play_action="true",
+                    pass_concept="flood",
+                    beats_box="heavy_box;loaded_box",
+                    preferred_down_distance="second_medium",
+                    tags="play_action",
+                ),
+            ],
+            down=2,
+            distance=5,
+            box_count=8,
+        )
+        bad_run = next(play for play in recommendations if play["play_id"] == "bad_run")
+        self.assertEqual(ids(recommendations)[:2], ["answer", "bad_run"])
+        self.assertTrue(any("lacks proven fit" in reason for reason in bad_run["reasons"]))
+
+    def test_light_box_boosts_inside_run(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="run",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="duo",
+                    pass_concept="none",
+                    preferred_down_distance="second_medium",
+                    tags="inside_run;gap_scheme",
+                ),
+                make_play(
+                    play_id="shot",
+                    pass_concept="four_verts",
+                    preferred_down_distance="second_medium",
+                    tags="deep_shot",
+                ),
+            ],
+            down=2,
+            distance=5,
+            box_count=5,
+        )
+        self.assertEqual(ids(recommendations)[:2], ["run", "shot"])
+
+    def test_reasons_are_explainable(self) -> None:
+        scored = self.score(
+            make_play(
+                play_id="explain",
+                preferred_down_distance="third_short",
+                preferred_field_zone="redzone",
+                beats_front="odd_tite",
+                beats_coverage="cover3",
+                beats_box="heavy_box",
+                play_action="true",
+                pass_concept="flood",
+                tags="redzone",
             ),
-            limit=10,
+            down=3,
+            distance=2,
+            field_zone="redzone",
+            front_id="odd_tite",
+            coverage_id="cover3",
+            box_count=7,
         )
-        top_four = set(ids(recommendations[:4]))
-        self.assertIn("mesh", top_four)
-        self.assertTrue({"slant_flat", "rpo", "screen"} & top_four)
-        self.assertGreater(
-            recommendations[ids(recommendations).index("mesh")]["score"],
-            recommendations[ids(recommendations).index("inside_zone")]["score"],
+        text = " ".join(scored["reasons"])
+        for category in [
+            "down-distance",
+            "field-zone",
+            "front",
+            "coverage",
+            "box",
+            "tactical",
+        ]:
+            self.assertIn(category, text)
+
+    def test_score_is_clamped_between_0_and_100(self) -> None:
+        low = self.score(
+            make_play(
+                play_id="low",
+                preferred_down_distance="third_long",
+                preferred_field_zone="goal_line",
+                pass_concept="four_verts",
+                tags="deep_shot;slow_developing",
+                formation_id="under_center",
+                personnel="12",
+                beats_box="light_box",
+            ),
+            down=4,
+            distance=1,
+            field_zone="goal_line",
+            box_count=8,
+            formation_id="gun_11_2x2",
+            personnel="11",
         )
-
-    def test_third_and_long_keeps_pass_concepts_above_pure_runs(self) -> None:
-        recommendations = self.recommend(down=3, distance=9, field_zone="midfield")
-        order = ids(recommendations)
-        self.assertLess(order.index("mesh"), order.index("inside_zone"))
-        self.assertLess(order.index("flood"), order.index("inside_zone"))
-
-    def test_third_and_very_long_heavily_penalizes_pure_runs(self) -> None:
-        recommendations = self.recommend(down=3, distance=15, field_zone="midfield")
-        order = ids(recommendations)
-        inside_zone = next(play for play in recommendations if play["play_id"] == "inside_zone")
-        self.assertNotIn("inside_zone", ids(recommendations[:3]))
-        self.assertLess(order.index("screen"), order.index("inside_zone"))
-        self.assertLess(inside_zone["score"], 0)
-        self.assertTrue(
-            any("pure run on 3rd/4th & very long" in reason for reason in inside_zone["reasons"])
+        high = self.score(
+            make_play(
+                play_id="high",
+                play_type="run",
+                play_family="run",
+                run_scheme="duo",
+                pass_concept="none",
+                preferred_down_distance="third_short",
+                preferred_field_zone="goal_line",
+                beats_front="odd_tite",
+                beats_coverage="cover3",
+                beats_box="heavy_box",
+                tags="inside_run;gap_scheme;redzone",
+            ),
+            down=3,
+            distance=1,
+            field_zone="goal_line",
+            front_id="odd_tite",
+            coverage_id="cover3",
+            box_count=7,
         )
+        self.assertGreaterEqual(low["score"], 0.0)
+        self.assertLessEqual(high["score"], 100.0)
 
-    def test_backed_up_boosts_safe_calls_and_penalizes_risky_shots(self) -> None:
-        recommendations = self.recommend(down=2, distance=8, field_zone="own_redzone")
-        order = ids(recommendations)
-        self.assertLess(order.index("screen"), order.index("verts"))
-        self.assertLess(order.index("slant_flat"), order.index("verts"))
-
-    def test_red_zone_penalizes_deep_space_concepts(self) -> None:
-        recommendations = self.recommend(down=2, distance=6, field_zone="redzone")
-        order = ids(recommendations)
-        self.assertLess(order.index("slant_flat"), order.index("verts"))
-        self.assertLess(order.index("duo"), order.index("verts"))
-
-    def test_goal_line_prioritizes_goal_line_suitable_calls(self) -> None:
-        recommendations = self.recommend(down=3, distance=1, field_zone="goal_line")
-        top_three = ids(recommendations[:3])
-        self.assertIn("duo", top_three)
-        self.assertNotEqual(ids(recommendations)[0], "verts")
-
-    def test_light_box_boosts_run_only_when_situation_allows_it(self) -> None:
-        first_and_ten = build_situation(
+    def test_stable_tie_breaking(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="first", play_name="First"),
+                make_play(play_id="second", play_name="Second"),
+            ],
             down=1,
             distance=10,
-            field_zone="midfield",
-            formation_id="gun_11_2x2",
-            front_id="even_4",
-            coverage_id="cover3",
-            box_count=5,
         )
-        third_and_fifteen = build_situation(
-            down=3,
-            distance=15,
-            field_zone="midfield",
-            formation_id="gun_11_2x2",
-            front_id="even_4",
-            coverage_id="cover3",
-            box_count=5,
-        )
-        run_play = self.playbook.loc[self.playbook["play_id"] == "inside_zone"].iloc[0]
-        first_score, _ = score_play(run_play, first_and_ten)
-        third_score, _ = score_play(run_play, third_and_fifteen)
-
-        self.assertGreater(first_score, third_score)
-        self.assertNotIn(
-            "inside_zone",
-            ids(recommend_plays(self.playbook, third_and_fifteen, limit=3)),
-        )
-
-    def test_heavy_box_penalizes_pure_run_and_boosts_rpo(self) -> None:
-        recommendations = recommend_plays(
-            self.playbook,
-            build_situation(
-                down=2,
-                distance=5,
-                field_zone="midfield",
-                formation_id="gun_11_2x2",
-                front_id="odd_tite",
-                coverage_id="cover3",
-                box_count=8,
-            ),
-            limit=10,
-        )
-        order = ids(recommendations)
-        self.assertLess(order.index("rpo"), order.index("inside_zone"))
-
-    def test_cover3_boosts_cover3_beaters_without_breaking_third_and_fifteen(self) -> None:
-        recommendations = recommend_plays(
-            self.playbook,
-            build_situation(
-                down=3,
-                distance=15,
-                field_zone="midfield",
-                formation_id="gun_11_2x2",
-                front_id="even_4",
-                coverage_id="cover3",
-                box_count=5,
-            ),
-            limit=10,
-        )
-        top_four = set(ids(recommendations[:4]))
-        self.assertTrue({"flood", "screen", "verts", "slant_flat"} & top_four)
-        self.assertNotIn("inside_zone", ids(recommendations[:3]))
-
-    def test_pressure_tendency_boosts_quick_answers(self) -> None:
-        situation = build_situation(
-            down=3,
-            distance=9,
-            field_zone="midfield",
-            formation_id="gun_11_2x2",
-            front_id="even_4",
-            coverage_id="cover2",
-            box_count=6,
-        )
-        base = recommend_plays(self.playbook, situation, limit=10)
-        adjusted = recommend_plays(
-            self.playbook,
-            situation,
-            tendencies={"pressure": {"yes": 0.9, "no": 0.1}},
-            limit=10,
-        )
-        base_scores = {play["play_id"]: play["score"] for play in base}
-        adjusted_scores = {play["play_id"]: play["score"] for play in adjusted}
-        self.assertGreater(adjusted_scores["screen"], base_scores["screen"])
-        self.assertGreater(adjusted_scores["rpo"], base_scores["rpo"])
-        self.assertLess(adjusted_scores["verts"], base_scores["verts"])
-
-    def test_recommendations_only_return_existing_playbook_plays(self) -> None:
-        recommendations = self.recommend(down=1, distance=10, field_zone="midfield")
-        play_ids = set(self.playbook["play_id"])
-        self.assertTrue({play["play_id"] for play in recommendations} <= play_ids)
+        self.assertEqual(ids(recommendations)[:2], ["first", "second"])
 
 
 if __name__ == "__main__":
