@@ -7,17 +7,18 @@ import csv
 from pathlib import Path
 import sys
 
+import pandas as pd
+
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 PLAYBOOK_PATH = BASE_DIR / "data" / "playbook.csv"
 DEFAULT_TENDENCIES_PATH = BASE_DIR / "data" / "opponent_tendencies.csv"
-FORMATION_TAXONOMY_PATH = BASE_DIR / "data" / "taxonomy" / "offensive_formations.csv"
+FORMATION_TAXONOMY_PATH = BASE_DIR / "data" / "taxonomy" / "formations.csv"
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 if str(BASE_DIR / "src") not in sys.path:
     sys.path.insert(0, str(BASE_DIR / "src"))
-
-import pandas as pd
 
 from opponent.tendencies import OpponentTendencyAnalyzer
 from recommendation.engine import build_situation, recommend_plays
@@ -35,6 +36,14 @@ def load_formation_names() -> dict[str, str]:
         }
 
 
+def positive_int(value: str) -> int:
+    """Parse a positive integer CLI argument."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the play suggestion script."""
     parser = argparse.ArgumentParser(
@@ -49,17 +58,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--box-count", type=int, required=True, dest="box_count")
     parser.add_argument("--personnel")
     parser.add_argument("--opponent")
-    parser.add_argument("--top-n", type=int, default=10, dest="top_n")
-    parser.add_argument("--max-per-concept", type=int, default=3, dest="max_per_concept")
+    parser.add_argument("--top-n", type=positive_int, default=3, dest="top_n")
     parser.add_argument(
         "--intent",
         choices=["shot", "safe", "balanced"],
-        help="Recommendation intent. On second-and-short, omit this to show both shot and safe sections.",
+        default="balanced",
+        help="Optional second-and-short recommendation intent.",
     )
     parser.add_argument(
-        "--verbose",
+        "--show-reasons",
         action="store_true",
-        help="Print detailed scoring reasons.",
+        help="Print detailed scoring reasons for each recommendation.",
+    )
+    parser.add_argument(
+        "--playbook-path",
+        default=str(PLAYBOOK_PATH),
+        dest="playbook_path",
     )
     parser.add_argument(
         "--opponent-tendencies-path",
@@ -106,10 +120,7 @@ def humanize_token(value: object) -> str:
     return " ".join(words)
 
 
-def formation_label(
-    play: dict[str, object],
-    formation_names: dict[str, str],
-) -> str:
+def formation_label(play: dict[str, object], formation_names: dict[str, str]) -> str:
     """Return a short formation name for a play."""
     formation_id = normalize_text(play.get("formation_id", ""))
     if not formation_id:
@@ -151,54 +162,50 @@ def format_play_call(
 
     if is_meaningful(pass_concept):
         parts.append(humanize_token(pass_concept))
-    if is_meaningful(pass_modifier, ignore={"", "none", "base", "vertical", "intermediate"}):
+    if is_meaningful(
+        pass_modifier,
+        ignore={"", "none", "base", "vertical", "intermediate"},
+    ):
         parts.append(humanize_token(pass_modifier))
     return " ".join(parts).strip()
 
 
-def is_second_and_short(situation: dict[str, str | int]) -> bool:
-    """Return whether the current situation is second and short."""
-    return str(situation.get("down_distance_tag")) == "second_short"
-
-
-def section_title(intent: str) -> str:
-    """Return the user-facing section title for an intent."""
+def load_playbook_rows(playbook: pd.DataFrame) -> dict[str, dict[str, object]]:
+    """Build a play_id lookup for presentation details."""
     return {
-        "shot": "Aggressive / shot play options",
-        "safe": "Safe / move-the-chains options",
-        "balanced": "Balanced options",
-    }[intent]
+        str(row.get("play_id", "")): {column: row.get(column, "") for column in row.index}
+        for _, row in playbook.iterrows()
+    }
 
 
 def print_recommendations(
-    title: str,
     plays: list[dict[str, object]],
     *,
     top_n: int,
-    tendencies_used: bool,
-    verbose: bool,
+    show_reasons: bool,
     formation_names: dict[str, str],
     playbook_rows: dict[str, dict[str, object]],
 ) -> None:
-    """Print a formatted recommendation section."""
-    print(title)
-    print(f"Opponent tendencies used: {'yes' if tendencies_used else 'no'}\n")
+    """Print a compact recommendation list."""
+    print(f"Top {top_n} recommended plays:\n")
+
     for rank, play in enumerate(plays, start=1):
         play_details = playbook_rows.get(str(play.get("play_id", "")), play)
-        concept_scheme = play.get("concept_scheme", "")
+        play_name = normalize_text(play_details.get("play_name")) or str(
+            play.get("play_name", "")
+        )
         formation = formation_label(play_details, formation_names)
         play_call = format_play_call(play_details, formation_names)
-        duplicate_label = " | fallback duplicate concept" if play.get("duplicate_fallback") else ""
+        print(f"{rank}. {play_name}")
         print(
-            f"{rank}. {play_call or play['play_name']} | "
-            f"play_id={play['play_id']} | "
-            f"score={play['score']:.2f} | "
-            f"formation={formation or play.get('formation_id', '')} | "
-            f"personnel={play.get('personnel', '')} | "
-            f"play_type={play.get('play_type', '')} | "
-            f"concept/scheme={concept_scheme}{duplicate_label}"
+            "   "
+            f"score={float(play['score']):.2f} | "
+            f"formation={formation or normalize_text(play.get('formation_id', ''))} | "
+            f"personnel={normalize_text(play.get('personnel', ''))} | "
+            f"type={normalize_text(play.get('play_type', ''))} | "
+            f"call={play_call or play_name}"
         )
-        if verbose:
+        if show_reasons:
             print("   Reasons:")
             if play["reasons"]:
                 for reason in play["reasons"]:
@@ -211,12 +218,10 @@ def print_recommendations(
 def main() -> None:
     """Load the playbook, score plays, and print the top recommendations."""
     args = parse_args()
-    playbook = pd.read_csv(PLAYBOOK_PATH)
+
+    playbook = pd.read_csv(Path(args.playbook_path))
     formation_names = load_formation_names()
-    playbook_rows = {
-        str(row.get("play_id", "")): {column: row.get(column, "") for column in row.index}
-        for _, row in playbook.iterrows()
-    }
+    playbook_rows = load_playbook_rows(playbook)
 
     situation = build_situation(
         down=args.down,
@@ -244,52 +249,22 @@ def main() -> None:
             }
         )
 
-    if is_second_and_short(situation):
-        print(
-            "Second and short is a dual-mode situation: you can either take a calculated shot or call a safer move-the-chains play.\n"
-        )
-
-    if is_second_and_short(situation) and not args.intent:
-        for intent in ["shot", "safe"]:
-            plays = recommend_plays(
-                playbook,
-                situation,
-                tendencies=tendencies,
-                top_n=args.top_n,
-                max_per_concept=args.max_per_concept,
-                intent=intent,
-            )
-            print_recommendations(
-                f"{section_title(intent)} (Top {args.top_n})",
-                plays,
-                top_n=args.top_n,
-                tendencies_used=bool(tendencies),
-                verbose=args.verbose,
-                formation_names=formation_names,
-                playbook_rows=playbook_rows,
-            )
-        return
-
-    selected_intent = args.intent or "balanced"
     top_plays = recommend_plays(
         playbook,
         situation,
         tendencies=tendencies,
         top_n=args.top_n,
-        max_per_concept=args.max_per_concept,
-        intent=selected_intent,
+        intent=args.intent,
     )
-    title = (
-        f"{section_title(selected_intent)} (Top {args.top_n})"
-        if is_second_and_short(situation)
-        else f"Top {args.top_n} recommended plays"
-    )
+
+    if not top_plays:
+        print("No plays matched the current filters.")
+        return
+
     print_recommendations(
-        title,
         top_plays,
-        top_n=args.top_n,
-        tendencies_used=bool(tendencies),
-        verbose=args.verbose,
+        top_n=min(args.top_n, len(top_plays)),
+        show_reasons=args.show_reasons,
         formation_names=formation_names,
         playbook_rows=playbook_rows,
     )

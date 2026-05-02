@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+.codex
 
 .venv/
 venv/
@@ -7,12 +8,12 @@ env/
 
 .ipynb_checkpoints/
 
-data/raw/
 data/processed/
 raw/
 exports/
 scratch/
 tmp/
+.pytest_cache/
 *.xlsx
 *.xls
 

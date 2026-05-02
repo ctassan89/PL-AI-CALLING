@@ -1,4 +1,4 @@
-"""Validate taxonomy, defensive tendency, and playbook CSV files."""
+"""Validate playbook, taxonomy, and opponent tendency CSV files."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 TAXONOMY_DIR = DATA_DIR / "taxonomy"
-RAW_DIR = DATA_DIR / "raw"
 PLAYBOOK_PATH = DATA_DIR / "playbook.csv"
-FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "offensive_formations.csv"
+OPPONENT_TENDENCIES_PATH = DATA_DIR / "opponent_tendencies.csv"
+FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "formations.csv"
 
 ALLOWED_DOWNS = {"1", "2", "3", "4"}
 ALLOWED_DISTANCES = {"short", "medium", "long", "xlong"}
@@ -112,6 +112,18 @@ def load_csv_columns(path: Path) -> list[str]:
     with path.open(newline="") as handle:
         reader = csv.reader(handle)
         return next(reader, [])
+
+
+def require_columns(
+    path: Path,
+    errors: list[str],
+    base_dir: Path,
+) -> list[str]:
+    """Return CSV columns or record a missing-file error."""
+    if not path.exists():
+        errors.append(f"Missing CSV file: {format_relative_path(path, base_dir)}")
+        return []
+    return load_csv_columns(path)
 
 
 def get_row_value(row: dict[str, str], column_name: str) -> str:
@@ -298,25 +310,30 @@ def add_run_scheme_modifier_pair_errors(
             )
 
 
-def validate_data(base_dir: Path) -> list[str]:
-    """Validate taxonomy and raw input CSV files under a repository base dir."""
-    base_dir = Path(base_dir)
+def validate_data(base_dir: Path | None = None) -> list[str]:
+    """Validate CSV data files under a repository base dir."""
+    base_dir = Path(base_dir) if base_dir is not None else BASE_DIR
     data_dir = base_dir / "data"
     taxonomy_dir = data_dir / "taxonomy"
-    raw_dir = data_dir / "raw"
     playbook_path = data_dir / "playbook.csv"
-    formation_taxonomy_path = taxonomy_dir / "offensive_formations.csv"
+    opponent_tendencies_path = data_dir / "opponent_tendencies.csv"
+    formation_taxonomy_path = taxonomy_dir / "formations.csv"
 
     errors: list[str] = []
 
-    defensive_tendency_columns = load_csv_columns(raw_dir / "defensive_tendencies.csv")
-    playbook_columns = load_csv_columns(playbook_path)
-    add_missing_column_errors(
-        errors,
-        defensive_tendency_columns,
-        REQUIRED_DEFENSIVE_TENDENCY_COLUMNS,
-        "defensive_tendencies.csv",
+    opponent_tendency_columns = (
+        load_csv_columns(opponent_tendencies_path)
+        if opponent_tendencies_path.exists()
+        else []
     )
+    playbook_columns = require_columns(playbook_path, errors, base_dir)
+    if opponent_tendencies_path.exists():
+        add_missing_column_errors(
+            errors,
+            opponent_tendency_columns,
+            REQUIRED_DEFENSIVE_TENDENCY_COLUMNS,
+            "opponent_tendencies.csv",
+        )
     add_missing_column_errors(
         errors,
         playbook_columns,
@@ -357,7 +374,11 @@ def validate_data(base_dir: Path) -> list[str]:
     if errors:
         return errors
 
-    defensive_tendencies = load_csv_rows(raw_dir / "defensive_tendencies.csv")
+    opponent_tendencies = (
+        load_csv_rows(opponent_tendencies_path)
+        if opponent_tendencies_path.exists()
+        else []
+    )
     playbook = load_csv_rows(playbook_path)
 
     front_ids = load_id_set(taxonomy_dir / "fronts.csv", "front_id")
@@ -368,52 +389,52 @@ def validate_data(base_dir: Path) -> list[str]:
     )
     formation_ids = load_id_set(formation_taxonomy_path, "formation_id")
 
-    add_unknown_id_errors(errors, defensive_tendencies, "front_id", front_ids)
-    add_unknown_id_errors(errors, defensive_tendencies, "coverage_id", coverage_ids)
+    add_unknown_id_errors(errors, opponent_tendencies, "front_id", front_ids)
+    add_unknown_id_errors(errors, opponent_tendencies, "coverage_id", coverage_ids)
     add_unknown_id_errors(
         errors,
-        defensive_tendencies,
+        opponent_tendencies,
         "defensive_personnel_id",
         defensive_personnel_ids,
     )
     add_unknown_id_errors(
         errors,
-        defensive_tendencies,
+        opponent_tendencies,
         "offensive_formation_id",
         formation_ids,
     )
 
     add_invalid_value_errors(
         errors,
-        defensive_tendencies,
+        opponent_tendencies,
         "down",
         ALLOWED_DOWNS,
-        "defensive_tendencies.csv",
+        "opponent_tendencies.csv",
     )
     add_invalid_value_errors(
         errors,
-        defensive_tendencies,
+        opponent_tendencies,
         "distance",
         ALLOWED_DISTANCES,
-        "defensive_tendencies.csv",
+        "opponent_tendencies.csv",
     )
     add_invalid_value_errors(
         errors,
-        defensive_tendencies,
+        opponent_tendencies,
         "field_zone",
         ALLOWED_FIELD_ZONES,
-        "defensive_tendencies.csv",
+        "opponent_tendencies.csv",
     )
     add_invalid_value_errors(
         errors,
-        defensive_tendencies,
+        opponent_tendencies,
         "hash",
         ALLOWED_HASHES,
-        "defensive_tendencies.csv",
+        "opponent_tendencies.csv",
     )
 
     for column_name in ["frequency", "success_rate_allowed", "epa_allowed"]:
-        add_non_numeric_errors(errors, defensive_tendencies, column_name)
+        add_non_numeric_errors(errors, opponent_tendencies, column_name)
 
     add_unknown_id_errors(errors, playbook, "formation_id", formation_ids, "play_id")
 
@@ -457,7 +478,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run validation checks for defensive tendency input data."""
+    """Run validation checks for repo data files."""
     args = parse_args()
     errors = validate_data(args.base_dir)
 

@@ -390,6 +390,16 @@ def has_explicit_conversion_answer(play: pd.Series, situation: Situation, tags: 
     )
 
 
+def is_explicit_long_yardage_play_action_answer(
+    play: pd.Series,
+    situation: Situation,
+) -> bool:
+    """Return whether play-action is explicitly marked for this long-yardage spot."""
+    if not is_play_action(play):
+        return False
+    return str(situation["down_distance_tag"]) in normalize_preferred_down_distance(play)
+
+
 def is_play_action(play: pd.Series, tags: set[str] | None = None) -> bool:
     """Return whether the play is tagged as play-action."""
     if tags is None:
@@ -634,14 +644,14 @@ def concept_group_key(play: pd.Series) -> str:
     play_type = normalize_text(play_series_value(play, "play_type"))
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
     run_scheme = normalize_text(play_series_value(play, "run_scheme"))
-    run_modifier = normalize_text(play_series_value(play, "run_modifier"))
     rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+    play_action = normalize_text(play_series_value(play, "play_action")) == "true"
 
     if play_type == "pass":
+        if play_action:
+            return f"play_action:{pass_concept}:true"
         return f"pass:{pass_concept}"
     if play_type == "run":
-        if run_modifier and run_modifier != "none":
-            return f"run:{run_scheme}:{run_modifier}"
         return f"run:{run_scheme}"
     if play_type == "rpo":
         if rpo_tag and rpo_tag != "none":
@@ -789,7 +799,18 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if play_action and is_second_long and field_zone == "open_field":
             score += add_reason(reasons, 2.0, "tactical: play_action can create a chunk on second_long")
         if play_action and (is_third_long or is_fourth_long):
-            score += add_reason(reasons, -25.0, "tactical: play action is not preferred on third/fourth long")
+            if is_explicit_long_yardage_play_action_answer(play, situation):
+                score += add_reason(
+                    reasons,
+                    -6.0,
+                    "tactical: play action is only lightly discounted because the playbook explicitly tags it for this long-yardage situation",
+                )
+            else:
+                score += add_reason(
+                    reasons,
+                    -35.0,
+                    "tactical: play action is not preferred on third/fourth long unless explicitly tagged for that situation",
+                )
         if rpo_tag in PASS_ORIENTED_LONG_RPO_TAGS:
             delta = 3.0 if rpo_tag in {"glance", "double_slant", "stick"} else 2.0
             score += add_reason(reasons, delta, f"tactical: {rpo_tag} is a viable long-yardage RPO answer")

@@ -934,7 +934,7 @@ class RecommendationEngineTests(unittest.TestCase):
                     play_id="pa",
                     pass_concept="dagger",
                     play_action="true",
-                    preferred_down_distance="third_long",
+                    preferred_down_distance="second_medium",
                     beats_coverage="cover3",
                     tags="intermediate_pass;play_action",
                 ),
@@ -957,7 +957,55 @@ class RecommendationEngineTests(unittest.TestCase):
         )
         pa = next(play for play in recommendations if play["play_id"] == "pa")
         self.assertEqual(ids(recommendations)[:2], ["dropback", "pa"])
-        self.assertTrue(any("play action is not preferred on third/fourth long" in reason for reason in pa["reasons"]))
+        self.assertTrue(
+            any(
+                "third/fourth long unless explicitly tagged for that situation"
+                in reason
+                for reason in pa["reasons"]
+            )
+        )
+
+    def test_third_long_only_lightly_penalizes_explicit_play_action_answer(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="pa_tagged",
+                    pass_concept="dagger",
+                    play_action="true",
+                    preferred_down_distance="third_long",
+                    beats_coverage="cover3",
+                    tags="intermediate_pass;play_action",
+                ),
+                make_play(
+                    play_id="pa_untagged",
+                    pass_concept="dagger",
+                    play_action="true",
+                    preferred_down_distance="second_medium",
+                    beats_coverage="cover3",
+                    tags="intermediate_pass;play_action",
+                ),
+            ],
+            down=3,
+            distance=10,
+            field_zone="open_field",
+            coverage_id="cover3",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        tagged = next(play for play in recommendations if play["play_id"] == "pa_tagged")
+        untagged = next(
+            play for play in recommendations if play["play_id"] == "pa_untagged"
+        )
+
+        self.assertEqual(ids(recommendations)[:2], ["pa_tagged", "pa_untagged"])
+        self.assertTrue(
+            any(
+                "explicitly tags it for this long-yardage situation" in reason
+                for reason in tagged["reasons"]
+            )
+        )
+        self.assertGreater(tagged["score"], untagged["score"])
 
     def test_build_situation_uses_fourth_long_tag(self) -> None:
         situation = build_situation(

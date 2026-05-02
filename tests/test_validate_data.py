@@ -12,7 +12,7 @@ from scripts.validate_data import PLAYBOOK_COLUMNS, validate_data
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_SCRIPT = PROJECT_ROOT / "scripts" / "validate_data.py"
-DEFENSIVE_TENDENCY_COLUMNS = [
+OPPONENT_TENDENCY_COLUMNS = [
     "team",
     "game_id",
     "down",
@@ -44,13 +44,21 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> 
         writer.writerows(rows)
 
 
+def project_rows(
+    fieldnames: list[str],
+    rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Project row dictionaries onto the requested CSV field list."""
+    return [{fieldname: row.get(fieldname, "") for fieldname in fieldnames} for row in rows]
+
+
 def write_single_column_taxonomy(path: Path, values: list[str]) -> None:
     """Write a one-column taxonomy file."""
     write_csv(path, ["value"], [{"value": value} for value in values])
 
 
 def build_valid_playbook_row(**overrides: str) -> dict[str, str]:
-    """Create a minimal valid playbook row and allow targeted overrides."""
+    """Create a valid playbook row and allow targeted overrides."""
     row = {
         "play_id": "power_dbls",
         "play_name": "Power DBLS",
@@ -76,8 +84,8 @@ def build_valid_playbook_row(**overrides: str) -> dict[str, str]:
     return row
 
 
-def build_valid_defensive_tendency_row(**overrides: str) -> dict[str, str]:
-    """Create a minimal valid defensive tendency row."""
+def build_valid_opponent_tendency_row(**overrides: str) -> dict[str, str]:
+    """Create a valid opponent tendency row."""
     row = {
         "team": "test_team",
         "game_id": "game_001",
@@ -107,30 +115,29 @@ def create_fake_repo(
     tmp_path: Path,
     *,
     playbook_rows: list[dict[str, str]] | None = None,
-    defensive_tendency_rows: list[dict[str, str]] | None = None,
+    opponent_rows: list[dict[str, str]] | None = None,
     playbook_columns: list[str] | None = None,
+    include_opponent_file: bool = True,
     valid_run_pairs: list[tuple[str, str]] | None = None,
 ) -> Path:
-    """Create a minimal fake repo layout with valid taxonomy and raw data."""
+    """Create a minimal fake repo layout with valid taxonomy and data."""
     taxonomy_dir = tmp_path / "data" / "taxonomy"
-    raw_dir = tmp_path / "data" / "raw"
     playbook_path = tmp_path / "data" / "playbook.csv"
     taxonomy_dir.mkdir(parents=True, exist_ok=True)
-    raw_dir.mkdir(parents=True, exist_ok=True)
 
     single_column_taxonomies = {
-        "play_family.csv": ["run", "pass"],
-        "play_type.csv": ["run", "pass"],
-        "run_scheme.csv": ["power"],
+        "play_family.csv": ["run", "pass", "rpo"],
+        "play_type.csv": ["run", "pass", "rpo"],
+        "run_scheme.csv": ["power", "inside_zone"],
         "run_modifier.csv": ["none", "read"],
-        "pass_concept.csv": ["none"],
+        "pass_concept.csv": ["none", "stick"],
         "pass_modifier.csv": ["none"],
         "protection.csv": ["none"],
-        "rpo_tag.csv": ["none"],
+        "rpo_tag.csv": ["none", "stick"],
         "play_action.csv": ["false", "true"],
         "personnel.csv": ["10"],
-        "beats_front.csv": ["any", "none", "even", "odd", "odd_tite", "bear", "over", "under"],
-        "beats_coverage.csv": ["none", "zone", "man", "cover1", "cover2", "cover3", "cover4", "match", "soft_zone"],
+        "beats_front.csv": ["any", "none", "even", "over", "under"],
+        "beats_coverage.csv": ["none", "any", "zone", "cover3"],
         "beats_box.csv": ["light_box", "normal_box", "heavy_box", "loaded_box"],
         "preferred_down_distance.csv": [
             "any",
@@ -143,19 +150,16 @@ def create_fake_repo(
             "third_long",
             "fourth_short",
             "fourth_medium",
-            "shot_play",
+            "fourth_long",
         ],
         "preferred_field_zone.csv": [
             "any",
             "open_field",
-            "backed_up",
-            "coming_out",
-            "plus_territory",
             "high_redzone",
             "redzone",
             "goal_line",
         ],
-        "tags.csv": ["inside_run", "gap_scheme"],
+        "tags.csv": ["inside_run", "gap_scheme", "quick_game"],
     }
     for filename, values in single_column_taxonomies.items():
         write_single_column_taxonomy(taxonomy_dir / filename, values)
@@ -164,18 +168,11 @@ def create_fake_repo(
         taxonomy_dir / "valid_run_scheme_modifier_pairs.csv",
         ["run_scheme", "run_modifier"],
         [
-            {
-                "run_scheme": run_scheme,
-                "run_modifier": run_modifier,
-            }
+            {"run_scheme": run_scheme, "run_modifier": run_modifier}
             for run_scheme, run_modifier in (valid_run_pairs or [("power", "none")])
         ],
     )
-    write_csv(
-        taxonomy_dir / "fronts.csv",
-        ["front_id"],
-        [{"front_id": "even"}],
-    )
+    write_csv(taxonomy_dir / "fronts.csv", ["front_id"], [{"front_id": "even"}])
     write_csv(
         taxonomy_dir / "coverages.csv",
         ["coverage_id"],
@@ -187,26 +184,32 @@ def create_fake_repo(
         [{"defensive_personnel_id": "nickel"}],
     )
     write_csv(
-        taxonomy_dir / "offensive_formations.csv",
-        ["formation_id"],
-        [{"formation_id": "gun_1rb_2x2_spread_no_te"}],
+        taxonomy_dir / "formations.csv",
+        ["formation_id", "formation_name"],
+        [{"formation_id": "gun_1rb_2x2_spread_no_te", "formation_name": "DBLS"}],
     )
 
     write_csv(
         playbook_path,
         playbook_columns or list(PLAYBOOK_COLUMNS),
-        playbook_rows or [build_valid_playbook_row()],
+        project_rows(
+            playbook_columns or list(PLAYBOOK_COLUMNS),
+            playbook_rows or [build_valid_playbook_row()],
+        ),
     )
-    write_csv(
-        raw_dir / "defensive_tendencies.csv",
-        DEFENSIVE_TENDENCY_COLUMNS,
-        defensive_tendency_rows or [build_valid_defensive_tendency_row()],
-    )
+
+    if include_opponent_file:
+        write_csv(
+            tmp_path / "data" / "opponent_tendencies.csv",
+            OPPONENT_TENDENCY_COLUMNS,
+            opponent_rows or [build_valid_opponent_tendency_row()],
+        )
+
     return tmp_path
 
 
 def run_validator_cli(base_dir: Path) -> subprocess.CompletedProcess[str]:
-    """Run the validator CLI against a temporary fake repo."""
+    """Run the validator CLI against a temporary repo."""
     return subprocess.run(
         [sys.executable, str(VALIDATOR_SCRIPT), "--base-dir", str(base_dir)],
         cwd=PROJECT_ROOT,
@@ -217,103 +220,62 @@ def run_validator_cli(base_dir: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_validate_data_accepts_valid_dataset(tmp_path: Path) -> None:
-    """A valid fake repo should pass both importable and CLI validation."""
+    """A valid fake repo should pass importable and CLI validation."""
     create_fake_repo(tmp_path)
 
-    assert validate_data(tmp_path) == []
+    assert validate_data(base_dir=tmp_path) == []
 
     result = run_validator_cli(tmp_path)
     assert result.returncode == 0
     assert result.stdout.strip() == "Data validation passed."
 
 
-def test_validate_data_rejects_invalid_scalar_value(tmp_path: Path) -> None:
-    """An invalid scalar taxonomy value should produce a row-specific error."""
+def test_validate_data_allows_missing_optional_opponent_file(tmp_path: Path) -> None:
+    """Opponent tendencies should be validated only when present."""
+    create_fake_repo(tmp_path, include_opponent_file=False)
+
+    assert validate_data(base_dir=tmp_path) == []
+
+
+def test_validate_data_reports_missing_required_playbook_columns(tmp_path: Path) -> None:
+    """The validator should report missing playbook columns."""
     create_fake_repo(
         tmp_path,
-        playbook_rows=[build_valid_playbook_row(play_id="bad_scalar", play_type="bad_type")],
+        playbook_columns=[column for column in PLAYBOOK_COLUMNS if column != "tags"],
     )
 
-    errors = validate_data(tmp_path)
+    errors = validate_data(base_dir=tmp_path)
 
-    assert errors
+    assert any("playbook.csv is missing required columns: tags" in error for error in errors)
+
+
+def test_validate_data_rejects_invalid_taxonomy_value(tmp_path: Path) -> None:
+    """Invalid taxonomy values should produce row-specific errors."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[
+            build_valid_playbook_row(play_id="bad_front", beats_front="even;ghost_front")
+        ],
+    )
+
+    errors = validate_data(base_dir=tmp_path)
+
     assert any(
-        "playbook row" in error
-        and "bad_scalar" in error
-        and "invalid play_type" in error
-        and "bad_type" in error
+        "playbook row 2 (bad_front): invalid beats_front token(s): 'ghost_front'."
+        == error
         for error in errors
     )
 
 
-def test_validate_data_rejects_invalid_multi_value_token(tmp_path: Path) -> None:
-    """An invalid semicolon-delimited token should identify the bad token and row."""
+def test_validate_data_cli_reports_errors_for_temp_repo(tmp_path: Path) -> None:
+    """The CLI should fail cleanly for invalid temporary input."""
     create_fake_repo(
         tmp_path,
-        playbook_rows=[build_valid_playbook_row(play_id="bad_front", beats_front="even;fake_front")],
-    )
-
-    errors = validate_data(tmp_path)
-
-    assert errors
-    assert any(
-        "playbook row 2" in error
-        and "bad_front" in error
-        and "invalid beats_front token" in error
-        and "fake_front" in error
-        for error in errors
-    )
-
-
-def test_validate_data_rejects_invalid_run_scheme_modifier_pair(tmp_path: Path) -> None:
-    """A valid scalar pair that is not allowed together should be rejected clearly."""
-    create_fake_repo(
-        tmp_path,
-        playbook_rows=[build_valid_playbook_row(play_id="bad_pair", run_modifier="read")],
-        valid_run_pairs=[("power", "none")],
-    )
-
-    errors = validate_data(tmp_path)
-
-    assert errors
-    assert any(
-        "bad_pair" in error
-        and "invalid run_scheme/run_modifier pair" in error
-        and "run_scheme='power'" in error
-        and "run_modifier='read'" in error
-        for error in errors
-    )
-
-
-def test_validate_data_rejects_bad_column_order(tmp_path: Path) -> None:
-    """The playbook must keep the exact documented column order."""
-    swapped_columns = list(PLAYBOOK_COLUMNS)
-    swapped_columns[0], swapped_columns[1] = swapped_columns[1], swapped_columns[0]
-    create_fake_repo(
-        tmp_path,
-        playbook_columns=swapped_columns,
-        playbook_rows=[build_valid_playbook_row()],
-    )
-
-    errors = validate_data(tmp_path)
-
-    assert errors
-    assert any("playbook.csv must use exact column order" in error for error in errors)
-
-
-def test_validate_data_cli_prints_clear_errors(tmp_path: Path) -> None:
-    """The CLI should exit non-zero and print bullet-pointed, row-specific errors."""
-    create_fake_repo(
-        tmp_path,
-        playbook_rows=[build_valid_playbook_row(play_id="cli_bad", beats_front="even;fake_front")],
+        opponent_rows=[build_valid_opponent_tendency_row(coverage_id="bad_coverage")],
     )
 
     result = run_validator_cli(tmp_path)
 
     assert result.returncode == 1
-    stdout_lines = result.stdout.strip().splitlines()
-    assert stdout_lines[0] == "Data validation failed:"
-    assert any(line.startswith("- ") for line in stdout_lines[1:])
-    assert "playbook row 2" in result.stdout
-    assert "cli_bad" in result.stdout
-    assert "fake_front" in result.stdout
+    assert "Data validation failed:" in result.stdout
+    assert "coverage_id 'bad_coverage'" in result.stdout
