@@ -71,7 +71,7 @@ docs/       Deeper project and design documentation
 
 The main input files are:
 
-- `data/raw/playbook.csv`: offensive playbook entries and metadata
+- `data/playbook.csv`: validated offensive playbook entries and metadata
 - `data/opponent_tendencies.csv`: sample opponent tendency input for the analyzer
 - `data/taxonomy/`: allowed football vocabulary used by validation and scoring
 

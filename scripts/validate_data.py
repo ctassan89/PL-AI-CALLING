@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 TAXONOMY_DIR = DATA_DIR / "taxonomy"
 RAW_DIR = DATA_DIR / "raw"
+PLAYBOOK_PATH = DATA_DIR / "playbook.csv"
 FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "offensive_formations.csv"
 
 ALLOWED_DOWNS = {"1", "2", "3", "4"}
@@ -303,12 +304,13 @@ def validate_data(base_dir: Path) -> list[str]:
     data_dir = base_dir / "data"
     taxonomy_dir = data_dir / "taxonomy"
     raw_dir = data_dir / "raw"
+    playbook_path = data_dir / "playbook.csv"
     formation_taxonomy_path = taxonomy_dir / "offensive_formations.csv"
 
     errors: list[str] = []
 
     defensive_tendency_columns = load_csv_columns(raw_dir / "defensive_tendencies.csv")
-    playbook_columns = load_csv_columns(raw_dir / "playbook.csv")
+    playbook_columns = load_csv_columns(playbook_path)
     add_missing_column_errors(
         errors,
         defensive_tendency_columns,
@@ -356,7 +358,7 @@ def validate_data(base_dir: Path) -> list[str]:
         return errors
 
     defensive_tendencies = load_csv_rows(raw_dir / "defensive_tendencies.csv")
-    playbook = load_csv_rows(raw_dir / "playbook.csv")
+    playbook = load_csv_rows(playbook_path)
 
     front_ids = load_id_set(taxonomy_dir / "fronts.csv", "front_id")
     coverage_ids = load_id_set(taxonomy_dir / "coverages.csv", "coverage_id")

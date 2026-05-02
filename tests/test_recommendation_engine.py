@@ -927,6 +927,50 @@ class RecommendationEngineTests(unittest.TestCase):
         self.assertEqual(ids(recommendations)[:2], ["safe", "shot"])
         self.assertTrue(any("safe move-the-chains answer" in reason for reason in safe["reasons"]))
 
+    def test_third_long_penalizes_play_action(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="pa",
+                    pass_concept="dagger",
+                    play_action="true",
+                    preferred_down_distance="third_long",
+                    beats_coverage="cover3",
+                    tags="intermediate_pass;play_action",
+                ),
+                make_play(
+                    play_id="dropback",
+                    pass_concept="dagger",
+                    play_action="false",
+                    preferred_down_distance="third_long",
+                    beats_coverage="cover3",
+                    tags="intermediate_pass",
+                ),
+            ],
+            down=3,
+            distance=10,
+            field_zone="open_field",
+            coverage_id="cover3",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        pa = next(play for play in recommendations if play["play_id"] == "pa")
+        self.assertEqual(ids(recommendations)[:2], ["dropback", "pa"])
+        self.assertTrue(any("play action is not preferred on third/fourth long" in reason for reason in pa["reasons"]))
+
+    def test_build_situation_uses_fourth_long_tag(self) -> None:
+        situation = build_situation(
+            down=4,
+            distance=10,
+            field_zone="open_field",
+            front_id="even",
+            coverage_id="cover3",
+            box_count=6,
+            personnel="10",
+        )
+        self.assertEqual(situation["down_distance_tag"], "fourth_long")
+
 
 if __name__ == "__main__":
     unittest.main()

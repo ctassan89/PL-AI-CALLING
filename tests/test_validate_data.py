@@ -114,6 +114,7 @@ def create_fake_repo(
     """Create a minimal fake repo layout with valid taxonomy and raw data."""
     taxonomy_dir = tmp_path / "data" / "taxonomy"
     raw_dir = tmp_path / "data" / "raw"
+    playbook_path = tmp_path / "data" / "playbook.csv"
     taxonomy_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -192,7 +193,7 @@ def create_fake_repo(
     )
 
     write_csv(
-        raw_dir / "playbook.csv",
+        playbook_path,
         playbook_columns or list(PLAYBOOK_COLUMNS),
         playbook_rows or [build_valid_playbook_row()],
     )

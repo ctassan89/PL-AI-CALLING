@@ -241,7 +241,11 @@ def classify_down_distance_tag(down: int, distance_bucket: str) -> str:
             "long": "third_long",
         }[distance_bucket]
     if down == 4:
-        return "fourth_short" if distance_bucket == "short" else "fourth_medium"
+        return {
+            "short": "fourth_short",
+            "medium": "fourth_medium",
+            "long": "fourth_long",
+        }[distance_bucket]
     raise ValueError(f"Unsupported down value: {down}")
 
 
@@ -477,6 +481,7 @@ def score_down_distance(play: pd.Series, situation: Situation) -> tuple[float, l
         "third_long": 28.0,
         "fourth_short": 30.0,
         "fourth_medium": 28.0,
+        "fourth_long": 30.0,
     }
     if tag in preferred:
         if tag == "early_down":
@@ -505,7 +510,7 @@ def score_down_distance(play: pd.Series, situation: Situation) -> tuple[float, l
         "third_medium",
         "fourth_medium",
     }
-    long_compatible = {"second_long", "third_long", "fourth_medium"}
+    long_compatible = {"second_long", "third_long", "fourth_long"}
     if tag in medium_compatible and preferred & medium_compatible:
         return 14.0, [f"+14 down-distance: compatible medium situation fit for {tag}"]
     if tag in long_compatible and preferred & long_compatible:
@@ -515,7 +520,7 @@ def score_down_distance(play: pd.Series, situation: Situation) -> tuple[float, l
         return 10.0, ["+10 down-distance: second_medium has limited carryover to second_long"]
     if tag in {"second_short", "second_medium", "second_long"} and "early_down" in preferred:
         return 3.0, ["+3 down-distance: early_down is only a weak fallback outside 1st down"]
-    if tag in {"third_medium", "third_long", "fourth_medium"} and "early_down" in preferred:
+    if tag in {"third_medium", "third_long", "fourth_medium", "fourth_long"} and "early_down" in preferred:
         return 3.0, ["+3 down-distance: early_down is only a weak fallback outside 1st down"]
     if bucket in preferred:
         return 12.0, [f"+12 down-distance: related {bucket} situation fit"]
@@ -529,6 +534,10 @@ def score_down_distance(play: pd.Series, situation: Situation) -> tuple[float, l
         "early_down" in preferred or "short" in preferred or preferred & SHORT_TAGS
     ):
         return -12.0, ["-12 down-distance: short-yardage profile is a bad mismatch for third_long"]
+    if tag == "fourth_long" and (
+        "early_down" in preferred or "short" in preferred or preferred & SHORT_TAGS
+    ):
+        return -14.0, ["-14 down-distance: short-yardage profile is a bad mismatch for fourth_long"]
 
     return 0.0, []
 
@@ -730,7 +739,9 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
     is_second_medium = down_distance_tag == "second_medium"
     is_second_long = down_distance_tag == "second_long"
     is_fourth_medium = down_distance_tag == "fourth_medium"
-    is_long_context = down_distance_tag in {"second_long", "third_long"} or distance >= 7
+    is_third_long = down_distance_tag == "third_long"
+    is_fourth_long = down_distance_tag == "fourth_long"
+    is_long_context = down_distance_tag in {"second_long", "third_long", "fourth_long"} or distance >= 7
     play_type = normalize_text(play_series_value(play, "play_type"))
 
     if is_short:
@@ -764,7 +775,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if deep_concept and not (play_action or (coverage_id in {"cover3", "zone"} and is_long_context)):
             score += add_reason(reasons, -4.0, "tactical: deep concept is too swingy for second_medium by default")
 
-    if is_second_long or down_distance_tag == "third_long" or distance >= 8:
+    if is_second_long or is_third_long or is_fourth_long or distance >= 8:
         if play_type == "pass":
             score += add_reason(reasons, 4.0, "tactical: pass game is preferred in long yardage")
         if pass_concept in LONG_YARDAGE_PASS_CONCEPTS:
@@ -777,6 +788,8 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 3.0, "tactical: deep concept has some second_long open_field value")
         if play_action and is_second_long and field_zone == "open_field":
             score += add_reason(reasons, 2.0, "tactical: play_action can create a chunk on second_long")
+        if play_action and (is_third_long or is_fourth_long):
+            score += add_reason(reasons, -25.0, "tactical: play action is not preferred on third/fourth long")
         if rpo_tag in PASS_ORIENTED_LONG_RPO_TAGS:
             delta = 3.0 if rpo_tag in {"glance", "double_slant", "stick"} else 2.0
             score += add_reason(reasons, delta, f"tactical: {rpo_tag} is a viable long-yardage RPO answer")
@@ -891,7 +904,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if four_verts and has_specific_coverage_support and (is_long_context or int(situation["down"]) == 1 or play_action):
             score += add_reason(reasons, 2.0, "tactical: four_verts has contextual cover3 value here")
 
-    if coverage_id == "cover4" and (is_second_long or down_distance_tag == "third_long" or distance >= 8):
+    if coverage_id == "cover4" and (is_second_long or is_third_long or is_fourth_long or distance >= 8):
         if pass_concept in {"seams", "y_cross", "flood", "curl_flat"} and (
             has_specific_coverage_support or "cover4_beater" in tags
         ):

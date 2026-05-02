@@ -9,5 +9,11 @@ env/
 
 data/raw/
 data/processed/
+raw/
+exports/
+scratch/
+tmp/
+*.xlsx
+*.xls
 
 models/
