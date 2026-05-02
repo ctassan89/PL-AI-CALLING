@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from typing import Any, TypedDict
 
@@ -26,6 +27,8 @@ class Recommendation(TypedDict, total=False):
     play_type: str
     concept_scheme: str
     concept_group: str
+    main_concept_key: str
+    duplicate_fallback: bool
     component_scores: dict[str, float]
     tie_breakers: dict[str, Any]
     used_tendencies: bool
@@ -117,6 +120,8 @@ LONG_YARDAGE_PASS_CONCEPTS = {
 }
 PASS_ORIENTED_LONG_RPO_TAGS = {"glance", "double_slant", "stick", "go_out", "slant_flat"}
 RUN_FIRST_LONG_RPO_TAGS = {"bubble", "now", "hitch"}
+SECOND_SHORT_SHOT_CONCEPTS = {"four_verts", "yankee", "mills"}
+SECOND_SHORT_SAFE_CONCEPTS = {"hitch", "stick", "mesh", "beamer"}
 
 
 def normalize_text(value: object) -> str:
@@ -348,8 +353,6 @@ def infer_play_tags(play: pd.Series) -> set[str]:
         tags.add("redzone")
     if "man_beater" in tags or pass_concept == "mesh":
         tags.add("man_beater")
-    if "zone_beater" in tags:
-        tags.add("zone_beater")
     return tags
 
 
@@ -621,19 +624,46 @@ def concept_group_key(play: pd.Series) -> str:
     """Return the grouping key used for concept diversity reranking."""
     play_type = normalize_text(play_series_value(play, "play_type"))
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
-    pass_modifier = normalize_text(play_series_value(play, "pass_modifier"))
     run_scheme = normalize_text(play_series_value(play, "run_scheme"))
     run_modifier = normalize_text(play_series_value(play, "run_modifier"))
     rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
-    play_action = normalize_text(play_series_value(play, "play_action"))
 
     if play_type == "pass":
-        return f"pass:{pass_concept}:{pass_modifier}:{play_action}"
+        return f"pass:{pass_concept}"
     if play_type == "run":
-        return f"run:{run_scheme}:{run_modifier}"
+        if run_modifier and run_modifier != "none":
+            return f"run:{run_scheme}:{run_modifier}"
+        return f"run:{run_scheme}"
     if play_type == "rpo":
-        return f"rpo:{run_scheme}:{rpo_tag}"
-    return f"{play_type}:{pass_concept or run_scheme}:{pass_modifier or run_modifier}"
+        if rpo_tag and rpo_tag != "none":
+            return f"rpo:{run_scheme}:{rpo_tag}"
+        if pass_concept and pass_concept != "none":
+            return f"rpo:{run_scheme}:{pass_concept}"
+        return f"rpo:{run_scheme}"
+    return f"{play_type}:{pass_concept or run_scheme}"
+
+
+def concept_scheme_label(play: pd.Series) -> str:
+    """Return the user-facing concept or scheme label for a play."""
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    run_modifier = normalize_text(play_series_value(play, "run_modifier"))
+    rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+
+    if play_type == "pass":
+        return pass_concept
+    if play_type == "run":
+        if run_modifier and run_modifier != "none":
+            return f"{run_scheme}/{run_modifier}"
+        return run_scheme
+    if play_type == "rpo":
+        if rpo_tag and rpo_tag != "none":
+            return f"{run_scheme}/{rpo_tag}"
+        if pass_concept and pass_concept != "none":
+            return f"{run_scheme}/{pass_concept}"
+        return run_scheme
+    return pass_concept or run_scheme
 
 
 def score_defensive_structure(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
@@ -888,10 +918,10 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
 
     if "zone" in coverage_fams or coverage_id in {"cover2", "cover3", "soft_zone", "zone"}:
         if (
-            {"zone_beater", "spacing", "curl_flat", "flood", "snag", "seams"} & tags
+            {"spacing", "curl_flat", "flood", "snag", "seams"} & tags
             or pass_concept in CONVERSION_ZONE_CONCEPTS
         ) and coverage_score > 0:
-            score += add_reason(reasons, 3.0, "tactical: zone_beater traits fit zone coverage")
+            score += add_reason(reasons, 3.0, "tactical: zone-coverage traits fit zone coverage")
         if pass_concept == "spacing" or "spacing" in tags:
             score += add_reason(reasons, 3.0, "tactical: spacing fits zone coverage")
         if pass_concept == "curl_flat" or "curl_flat" in tags:
@@ -992,6 +1022,52 @@ def score_risk_reward(play: pd.Series, situation: Situation) -> tuple[float, lis
     return clamp(score, -5.0, 5.0), reasons
 
 
+def apply_intent_adjustment(
+    play: pd.Series,
+    situation: Situation,
+    intent: str,
+) -> tuple[float, list[str]]:
+    """Apply lightweight second-and-short intent shaping without replacing base scoring."""
+    normalized_intent = normalize_text(intent) or "balanced"
+    if normalized_intent == "balanced":
+        return 0.0, []
+    if normalize_text(situation.get("down_distance_tag")) != "second_short":
+        return 0.0, []
+
+    tags = infer_play_tags(play)
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    deep_concept = is_deep_concept(play, tags)
+    reasons: list[str] = []
+    score = 0.0
+
+    if normalized_intent == "shot":
+        if deep_concept or "shot_play" in tags or pass_concept in SECOND_SHORT_SHOT_CONCEPTS:
+            score += add_reason(reasons, 18.0, "intent: aggressive shot play profile")
+        if "play_action" in tags:
+            score += add_reason(reasons, 4.0, "intent: play_action supports a calculated shot")
+        if play_type == "pass" and pass_concept in {"dagger", "comeback"}:
+            score += add_reason(reasons, 3.0, f"intent: {pass_concept} offers chunk-play upside")
+        if {"inside_run", "quick_game", "rpo"} & tags and not deep_concept:
+            score += add_reason(reasons, -6.0, "intent: efficient call de-emphasized for shot intent")
+        return clamp(score, -10.0, 22.0), reasons
+
+    if normalized_intent == "safe":
+        if {"inside_run", "gap_scheme"} & tags:
+            score += add_reason(reasons, 5.0, "intent: move-the-chains run profile")
+        if "quick_game" in tags:
+            score += add_reason(reasons, 5.0, "intent: quick-game profile supports a safe conversion")
+        if "rpo" in tags:
+            score += add_reason(reasons, 4.0, "intent: RPO profile protects the conversion")
+        if pass_concept in SECOND_SHORT_SAFE_CONCEPTS:
+            score += add_reason(reasons, 4.0, f"intent: {pass_concept} is a safe move-the-chains answer")
+        if deep_concept or "shot_play" in tags or pass_concept in SECOND_SHORT_SHOT_CONCEPTS:
+            score += add_reason(reasons, -6.0, "intent: shot profile de-emphasized for safe conversion")
+        return clamp(score, -8.0, 10.0), reasons
+
+    return 0.0, []
+
+
 def score_play(play: pd.Series, situation: Situation) -> Recommendation:
     """Score a play with component breakdown and explainable reasons."""
     down_distance_score, down_distance_reasons = score_down_distance(play, situation)
@@ -1024,9 +1100,7 @@ def score_play(play: pd.Series, situation: Situation) -> Recommendation:
         *risk_reward_reasons,
     ]
 
-    concept_scheme = normalize_text(play_series_value(play, "pass_concept"))
-    if not concept_scheme or concept_scheme == "none":
-        concept_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    concept_scheme = concept_scheme_label(play)
 
     return Recommendation(
         play_id=play_series_value(play, "play_id"),
@@ -1038,6 +1112,8 @@ def score_play(play: pd.Series, situation: Situation) -> Recommendation:
         personnel=play_series_value(play, "personnel"),
         play_type=play_series_value(play, "play_type"),
         concept_scheme=concept_scheme,
+        main_concept_key=concept_group_key(play),
+        duplicate_fallback=False,
         component_scores={
             "down_distance": down_distance_score,
             "field_zone": field_zone_score,
@@ -1173,6 +1249,7 @@ def recommend_plays(
     min_score: float | None = None,
     limit: int | None = None,
     max_per_concept: int | None = 3,
+    intent: str = "balanced",
 ) -> list[Recommendation]:
     """Score a playbook and return ranked recommendations."""
     if limit is not None:
@@ -1185,16 +1262,25 @@ def recommend_plays(
         tendency_adjustment, tendency_reasons = apply_tendency_adjustments(
             play, tendencies
         )
+        intent_adjustment, intent_reasons = apply_intent_adjustment(
+            play,
+            situation,
+            intent,
+        )
         final_score = clamp(
-            float(recommendation["base_score"]) + tendency_adjustment,
+            float(recommendation["base_score"]) + tendency_adjustment + intent_adjustment,
             0.0,
             100.0,
         )
         recommendation["tendency_adjustment"] = tendency_adjustment
         recommendation["score"] = final_score
         recommendation["used_tendencies"] = tendencies is not None
-        recommendation["reasons"] = [*recommendation["reasons"], *tendency_reasons]
-        recommendation["concept_group"] = concept_group_key(play)
+        recommendation["reasons"] = [
+            *recommendation["reasons"],
+            *tendency_reasons,
+            *intent_reasons,
+        ]
+        recommendation["concept_group"] = str(recommendation["main_concept_key"])
 
         if min_score is not None and final_score < min_score:
             continue
@@ -1214,20 +1300,35 @@ def recommend_plays(
         ),
     )
 
-    apply_concept_cap = max_per_concept is not None and not normalize_text(situation.get("formation_id"))
-    if apply_concept_cap:
-        filtered: list[Recommendation] = []
-        concept_counts: dict[str, int] = {}
-        for recommendation in ranked:
-            concept_group = str(recommendation.get("concept_group", ""))
-            current_count = concept_counts.get(concept_group, 0)
-            if current_count >= int(max_per_concept):
-                continue
-            concept_counts[concept_group] = current_count + 1
-            filtered.append(recommendation)
-        ranked = filtered
-
+    unique_recommendations: list[Recommendation] = []
+    duplicate_candidates: list[Recommendation] = []
+    seen_concepts: set[str] = set()
     for recommendation in ranked:
+        concept_key = str(recommendation.get("main_concept_key", ""))
+        if concept_key not in seen_concepts:
+            seen_concepts.add(concept_key)
+            unique_recommendations.append(recommendation)
+            continue
+        recommendation["duplicate_fallback"] = True
+        duplicate_candidates.append(recommendation)
+
+    final_ranked = unique_recommendations[:top_n]
+    if len(final_ranked) < top_n:
+        concept_counts = Counter(
+            str(recommendation.get("main_concept_key", ""))
+            for recommendation in final_ranked
+        )
+        concept_limit = int(max_per_concept) if max_per_concept is not None else None
+        for recommendation in duplicate_candidates:
+            concept_key = str(recommendation.get("main_concept_key", ""))
+            if concept_limit is not None and concept_counts[concept_key] >= concept_limit:
+                continue
+            concept_counts[concept_key] += 1
+            final_ranked.append(recommendation)
+            if len(final_ranked) >= top_n:
+                break
+
+    for recommendation in final_ranked:
         recommendation.pop("_original_index", None)
 
-    return ranked[:top_n]
+    return final_ranked[:top_n]

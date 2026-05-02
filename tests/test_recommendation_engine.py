@@ -495,14 +495,14 @@ class RecommendationEngineTests(unittest.TestCase):
                 beats_coverage="cover3",
                 tags="deep_shot",
             ),
-            make_play(
-                play_id="curl",
-                pass_concept="curl_flat",
-                preferred_down_distance="early_down;third_medium",
-                beats_coverage="cover3",
-                tags="zone_beater;quick_game",
-            ),
-        ]
+                make_play(
+                    play_id="curl",
+                    pass_concept="curl_flat",
+                    preferred_down_distance="early_down;third_medium",
+                    beats_coverage="cover3",
+                    tags="quick_game",
+                ),
+            ]
         early = self.recommend(
             plays,
             down=1,
@@ -600,7 +600,7 @@ class RecommendationEngineTests(unittest.TestCase):
                     play_type="pass",
                     pass_concept="y_cross",
                     preferred_down_distance="second_long",
-                    tags="intermediate_pass;zone_beater",
+                    tags="intermediate_pass",
                     beats_front="even",
                     beats_coverage="cover4",
                     beats_box="light_box",
@@ -672,7 +672,7 @@ class RecommendationEngineTests(unittest.TestCase):
                     pass_concept="y_cross",
                     preferred_down_distance="second_long",
                     beats_coverage="cover4",
-                    tags="zone_beater;intermediate_pass",
+                    tags="intermediate_pass",
                 ),
                 make_play(
                     play_id="now",
@@ -733,14 +733,14 @@ class RecommendationEngineTests(unittest.TestCase):
                     pass_concept="four_verts",
                     beats_coverage="cover2;cover3;man",
                     preferred_down_distance="second_long",
-                    tags="zone_beater;seam_read;middle_field_read;deep_shot",
+                    tags="seam_read;middle_field_read;deep_shot",
                 ),
                 make_play(
                     play_id="curl",
                     pass_concept="curl_flat",
                     beats_coverage="cover4",
                     preferred_down_distance="second_long",
-                    tags="zone_beater",
+                    tags="",
                 ),
             ],
             down=2,
@@ -760,7 +760,7 @@ class RecommendationEngineTests(unittest.TestCase):
         ]:
             self.assertFalse(any(forbidden in reason for reason in verts["reasons"]))
 
-    def test_zone_beater_tag_alone_does_not_rescue_missing_specific_coverage(self) -> None:
+    def test_zone_coverage_traits_do_not_rescue_missing_specific_coverage(self) -> None:
         recommendations = self.recommend(
             [
                 make_play(
@@ -768,7 +768,7 @@ class RecommendationEngineTests(unittest.TestCase):
                     beats_coverage="cover2;cover3",
                     preferred_down_distance="second_long",
                     pass_concept="four_verts",
-                    tags="zone_beater;deep_shot",
+                    tags="deep_shot",
                 ),
                 make_play(
                     play_id="hit",
@@ -788,7 +788,7 @@ class RecommendationEngineTests(unittest.TestCase):
         )
         miss = next(play for play in recommendations if play["play_id"] == "miss")
         self.assertEqual(ids(recommendations)[:2], ["hit", "miss"])
-        self.assertFalse(any("zone_beater traits fit zone coverage" in reason for reason in miss["reasons"]))
+        self.assertFalse(any("zone-coverage traits fit zone coverage" in reason for reason in miss["reasons"]))
 
     def test_generic_zone_beats_specific_mismatch_for_cover4(self) -> None:
         recommendations = self.recommend(
@@ -819,7 +819,7 @@ class RecommendationEngineTests(unittest.TestCase):
         self.assertTrue(any("coverage: family match via zone" in reason for reason in zone["reasons"]))
         self.assertFalse(any("coverage: family match" in reason for reason in specific["reasons"]))
 
-    def test_max_per_concept_limits_duplicate_output(self) -> None:
+    def test_top_n_prefers_unique_concepts_before_duplicates(self) -> None:
         plays = [
             make_play(play_id="verts1", pass_concept="four_verts", pass_modifier="base", play_action="false", preferred_down_distance="second_long", beats_coverage="cover4"),
             make_play(play_id="verts2", pass_concept="four_verts", pass_modifier="base", play_action="false", preferred_down_distance="second_long", beats_coverage="cover4"),
@@ -844,11 +844,88 @@ class RecommendationEngineTests(unittest.TestCase):
             top_n=10,
             max_per_concept=2,
         )
-        verts_count = sum(
-            1 for play in recommendations
-            if play.get("concept_scheme") == "four_verts"
+        self.assertEqual(
+            {play["concept_scheme"] for play in recommendations[:3]},
+            {"four_verts", "curl_flat", "flood"},
         )
-        self.assertLessEqual(verts_count, 2)
+        self.assertTrue(recommendations[3]["duplicate_fallback"])
+        self.assertEqual(len(recommendations), 4)
+        self.assertLessEqual(
+            sum(1 for play in recommendations if play.get("concept_scheme") == "four_verts"),
+            2,
+        )
+
+    def test_second_short_shot_intent_prefers_shot_profile(self) -> None:
+        recommendations = self.recommend_raw(
+            [
+                make_play(
+                    play_id="shot",
+                    pass_concept="four_verts",
+                    preferred_down_distance="second_short",
+                    beats_coverage="cover3",
+                    tags="shot_play;deep_shot",
+                ),
+                make_play(
+                    play_id="safe",
+                    pass_concept="stick",
+                    preferred_down_distance="second_short",
+                    beats_coverage="cover3",
+                    tags="quick_game",
+                ),
+            ],
+            build_situation(
+                down=2,
+                distance=2,
+                field_zone="open_field",
+                front_id="even",
+                coverage_id="cover3",
+                box_count=6,
+                personnel="10",
+            ),
+            top_n=5,
+            intent="shot",
+        )
+        shot = next(play for play in recommendations if play["play_id"] == "shot")
+        self.assertEqual(ids(recommendations)[:2], ["shot", "safe"])
+        self.assertTrue(any("aggressive shot play profile" in reason for reason in shot["reasons"]))
+
+    def test_second_short_safe_intent_prefers_safe_profile(self) -> None:
+        recommendations = self.recommend_raw(
+            [
+                make_play(
+                    play_id="shot",
+                    pass_concept="mills",
+                    preferred_down_distance="second_short",
+                    beats_coverage="cover3",
+                    tags="shot_play;deep_shot",
+                ),
+                make_play(
+                    play_id="safe",
+                    play_type="rpo",
+                    play_family="rpo",
+                    run_scheme="inside_zone",
+                    rpo_tag="stick",
+                    pass_concept="stick",
+                    preferred_down_distance="second_short",
+                    beats_coverage="cover3",
+                    tags="quick_game",
+                ),
+            ],
+            build_situation(
+                down=2,
+                distance=2,
+                field_zone="open_field",
+                front_id="even",
+                coverage_id="cover3",
+                box_count=6,
+                personnel="10",
+            ),
+            top_n=5,
+            intent="safe",
+        )
+        safe = next(play for play in recommendations if play["play_id"] == "safe")
+        self.assertEqual(ids(recommendations)[:2], ["safe", "shot"])
+        self.assertTrue(any("safe move-the-chains answer" in reason for reason in safe["reasons"]))
 
 
 if __name__ == "__main__":
