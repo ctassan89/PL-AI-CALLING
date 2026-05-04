@@ -36,6 +36,7 @@ def make_play(
     rpo_tag: str = "none",
     play_action: str = "false",
     beats_coverage: str = "cover3",
+    beats_pressure: str = "none",
     preferred_down_distance: str = "second_medium",
     tags: str = "quick_game",
 ) -> dict[str, str]:
@@ -56,6 +57,7 @@ def make_play(
         "personnel": "10",
         "beats_front": "even",
         "beats_coverage": beats_coverage,
+        "beats_pressure": beats_pressure,
         "beats_box": "light_box;normal_box;heavy_box",
         "preferred_down_distance": preferred_down_distance,
         "preferred_field_zone": "open_field",
@@ -175,3 +177,50 @@ def test_suggest_play_shows_reasons_only_when_requested(tmp_path: Path) -> None:
     assert "Reasons:" not in default_result.stdout
     assert verbose_result.returncode == 0
     assert "Reasons:" in verbose_result.stdout
+
+
+def test_suggest_play_accepts_pressure_id(tmp_path: Path) -> None:
+    """The CLI should accept --pressure-id and surface pressure context."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play(
+                "screen",
+                "RB Screen DBLS",
+                "gun_1rb_2x2_spread_no_te",
+                pass_concept="rb_screen",
+                beats_pressure="any_pressure;inside_blitz;double_a_gap;zero_pressure",
+                tags="screen;quick_game;hot_answer",
+            )
+        ],
+    )
+
+    result = run_suggest(
+        playbook_path,
+        "--top-n",
+        "1",
+        "--pressure-id",
+        "nickel_blitz",
+        "--show-reasons",
+    )
+
+    assert result.returncode == 0
+    assert "Pressure context: nickel_blitz" in result.stdout
+    assert "pressure:" in result.stdout
+
+
+def test_suggest_play_defaults_pressure_id_to_none(tmp_path: Path) -> None:
+    """Omitting --pressure-id should behave like none."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TANGO", "gun_1rb_3x1_spread_y_middle")],
+    )
+
+    result = run_suggest(playbook_path, "--top-n", "1")
+
+    assert result.returncode == 0
+    assert "Pressure context:" not in result.stdout

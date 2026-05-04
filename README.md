@@ -7,6 +7,7 @@ PL-AI-CALLING is a playbook-aware American football playcalling recommendation e
 - Main playbook: `data/playbook.csv`
 - Opponent tendencies: `data/opponent_tendencies.csv`
 - Taxonomy files: `data/taxonomy/`
+- Pressure allowed values: `data/allowed_values/pressure.csv`
 
 The repo is designed to work from a fresh clone with the versioned data that ships inside `data/`.
 
@@ -39,6 +40,7 @@ python scripts/suggest_play.py \
   --field-zone open_field \
   --front even \
   --coverage cover3 \
+  --pressure-id sim_pressure \
   --box-count 6 \
   --personnel 10 \
   --top-n 3
@@ -55,9 +57,37 @@ python scripts/suggest_play.py \
   --field-zone open_field \
   --front even \
   --coverage cover3 \
+  --pressure-id nickel_blitz \
   --box-count 6 \
   --personnel 10 \
   --top-n 3 \
+  --show-reasons
+```
+
+## Coverage Vs Pressure
+
+- `beats_coverage` is reserved for coverage structure answers only: `none`, `zone`, `man`, `cover1`, `cover2`, `cover3`, `cover4`, `match`, `soft_zone`
+- `beats_pressure` is reserved for blitz and pressure answers only
+- Example pressure values:
+  - `edge_blitz`: pressure from the edge
+  - `nickel_blitz`: pressure brought by the nickel
+  - `double_a_gap`: interior mug/double A-gap pressure
+  - `sim_pressure`: simulated pressure without a full-out blitz
+  - `creeper`: creeper pressure from a disguised front
+
+Example:
+
+```bash
+python scripts/suggest_play.py \
+  --down 3 \
+  --distance 6 \
+  --field-zone open_field \
+  --front even \
+  --coverage cover1 \
+  --pressure-id nickel_blitz \
+  --box-count 6 \
+  --personnel 11 \
+  --top-n 5 \
   --show-reasons
 ```
 
@@ -65,6 +95,7 @@ python scripts/suggest_play.py \
 
 ```text
 data/
+  allowed_values/
   playbook.csv
   opponent_tendencies.csv
   taxonomy/

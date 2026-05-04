@@ -75,6 +75,7 @@ def build_valid_playbook_row(**overrides: str) -> dict[str, str]:
         "personnel": "10",
         "beats_front": "even;over;under",
         "beats_coverage": "none",
+        "beats_pressure": "none",
         "beats_box": "light_box;normal_box",
         "preferred_down_distance": "early_down;second_short;third_short;fourth_short",
         "preferred_field_zone": "any",
@@ -119,11 +120,14 @@ def create_fake_repo(
     playbook_columns: list[str] | None = None,
     include_opponent_file: bool = True,
     valid_run_pairs: list[tuple[str, str]] | None = None,
+    taxonomy_overrides: dict[str, list[str]] | None = None,
 ) -> Path:
     """Create a minimal fake repo layout with valid taxonomy and data."""
     taxonomy_dir = tmp_path / "data" / "taxonomy"
+    allowed_values_dir = tmp_path / "data" / "allowed_values"
     playbook_path = tmp_path / "data" / "playbook.csv"
     taxonomy_dir.mkdir(parents=True, exist_ok=True)
+    allowed_values_dir.mkdir(parents=True, exist_ok=True)
 
     single_column_taxonomies = {
         "play_family.csv": ["run", "pass", "rpo"],
@@ -161,8 +165,14 @@ def create_fake_repo(
         ],
         "tags.csv": ["inside_run", "gap_scheme", "quick_game"],
     }
+    for filename, values in (taxonomy_overrides or {}).items():
+        single_column_taxonomies[filename] = values
     for filename, values in single_column_taxonomies.items():
         write_single_column_taxonomy(taxonomy_dir / filename, values)
+    write_single_column_taxonomy(
+        allowed_values_dir / "pressure.csv",
+        ["none", "any_pressure", "edge_blitz", "field_blitz", "boundary_blitz", "nickel_blitz", "inside_blitz", "double_a_gap", "zero_pressure", "sim_pressure", "creeper"],
+    )
 
     write_csv(
         taxonomy_dir / "valid_run_scheme_modifier_pairs.csv",
@@ -185,8 +195,14 @@ def create_fake_repo(
     )
     write_csv(
         taxonomy_dir / "formations.csv",
-        ["formation_id", "formation_name"],
-        [{"formation_id": "gun_1rb_2x2_spread_no_te", "formation_name": "DBLS"}],
+        ["formation_id", "formation_name", "personnel"],
+        [
+            {
+                "formation_id": "gun_1rb_2x2_spread_no_te",
+                "formation_name": "DBLS",
+                "personnel": "10",
+            }
+        ],
     )
 
     write_csv(
@@ -263,6 +279,171 @@ def test_validate_data_rejects_invalid_taxonomy_value(tmp_path: Path) -> None:
     assert any(
         "playbook row 2 (bad_front): invalid beats_front token(s): 'ghost_front'."
         == error
+        for error in errors
+    )
+
+
+def test_playbook_columns_include_beats_pressure_after_coverage() -> None:
+    """The playbook schema should place beats_pressure after beats_coverage."""
+    coverage_index = PLAYBOOK_COLUMNS.index("beats_coverage")
+    assert PLAYBOOK_COLUMNS[coverage_index + 1] == "beats_pressure"
+
+
+def test_validate_data_accepts_new_pass_concepts_and_protections(tmp_path: Path) -> None:
+    """New pass concepts should validate with the normalized protection values."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[
+            build_valid_playbook_row(
+                play_id="drive_dbls",
+                play_name="Drive DBLS",
+                play_family="pass",
+                play_type="pass",
+                run_scheme="none",
+                pass_concept="drive",
+                protection="5man",
+                beats_front="none",
+                beats_coverage="zone;cover3",
+                beats_pressure="sim_pressure;creeper",
+                beats_box="none",
+                preferred_down_distance="second_medium;third_medium",
+                preferred_field_zone="open_field;midfield",
+                tags="intermediate_pass",
+            ),
+            build_valid_playbook_row(
+                play_id="wr_tunnel_screen_dbls",
+                play_name="WR Tunnel Screen DBLS",
+                play_family="pass",
+                play_type="pass",
+                run_scheme="none",
+                pass_concept="wr_tunnel_screen",
+                protection="quick",
+                beats_front="none",
+                beats_coverage="zone;cover3",
+                beats_pressure="edge_blitz;field_blitz;nickel_blitz;sim_pressure",
+                beats_box="light_box;normal_box",
+                preferred_down_distance="early_down;second_medium",
+                preferred_field_zone="open_field;midfield",
+                tags="quick_game",
+            ),
+            build_valid_playbook_row(
+                play_id="rb_screen_dbls",
+                play_name="RB Screen DBLS",
+                play_family="pass",
+                play_type="pass",
+                run_scheme="none",
+                pass_concept="rb_screen",
+                protection="screen",
+                beats_front="none",
+                beats_coverage="zone;cover3",
+                beats_pressure="any_pressure;inside_blitz;double_a_gap;zero_pressure",
+                beats_box="light_box;normal_box",
+                preferred_down_distance="second_long;third_long",
+                preferred_field_zone="open_field;midfield",
+                tags="quick_game",
+            ),
+        ],
+        taxonomy_overrides={
+            "run_scheme.csv": ["power", "inside_zone", "none"],
+            "pass_concept.csv": ["none", "stick", "drive", "wr_tunnel_screen", "rb_screen"],
+            "protection.csv": ["none", "quick", "5man", "6man", "boot", "screen"],
+            "beats_front.csv": ["any", "none", "even", "over", "under"],
+            "beats_coverage.csv": ["none", "any", "zone", "cover3"],
+            "beats_box.csv": ["none", "light_box", "normal_box", "heavy_box", "loaded_box"],
+            "preferred_down_distance.csv": [
+                "any",
+                "early_down",
+                "second_medium",
+                "third_medium",
+                "second_long",
+                "third_long",
+            ],
+            "preferred_field_zone.csv": ["any", "open_field", "midfield"],
+            "tags.csv": ["inside_run", "gap_scheme", "quick_game", "intermediate_pass"],
+        },
+        valid_run_pairs=[("power", "none"), ("inside_zone", "none"), ("none", "none")],
+    )
+
+    assert validate_data(base_dir=tmp_path) == []
+
+
+def test_validate_data_rejects_invalid_protection_value(tmp_path: Path) -> None:
+    """Legacy protection labels should fail against the current taxonomy."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[build_valid_playbook_row(play_id="bad_protection", protection="quick_5man")],
+        taxonomy_overrides={
+            "protection.csv": ["none", "quick", "5man", "6man", "boot", "screen"],
+        },
+    )
+
+    errors = validate_data(base_dir=tmp_path)
+
+    assert any(
+        error == "playbook row 2 (bad_protection): invalid protection 'quick_5man'."
+        for error in errors
+    )
+
+
+def test_validate_data_rejects_invalid_pressure_value(tmp_path: Path) -> None:
+    """beats_pressure must use the allowed pressure taxonomy values."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[build_valid_playbook_row(play_id="bad_pressure", beats_pressure="ghost_pressure")],
+    )
+
+    errors = validate_data(base_dir=tmp_path)
+
+    assert any(
+        error == "playbook row 2 (bad_pressure): invalid beats_pressure token(s): 'ghost_pressure'."
+        for error in errors
+    )
+
+
+def test_validate_data_rejects_pressure_value_inside_beats_coverage(tmp_path: Path) -> None:
+    """Pressure values should not be accepted inside beats_coverage."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[build_valid_playbook_row(play_id="bad_coverage", beats_coverage="cover3;nickel_blitz")],
+        taxonomy_overrides={"beats_coverage.csv": ["none", "any", "zone", "cover3", "cover4", "man", "match", "soft_zone"]},
+    )
+
+    errors = validate_data(base_dir=tmp_path)
+
+    assert any(
+        error == "playbook row 2 (bad_coverage): invalid beats_coverage token(s): 'nickel_blitz'."
+        for error in errors
+    )
+
+
+def test_validate_data_rejects_run_pressure_answers(tmp_path: Path) -> None:
+    """Pure run plays should keep beats_pressure at none."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[build_valid_playbook_row(play_id="run_pressure", beats_pressure="edge_blitz")],
+    )
+
+    errors = validate_data(base_dir=tmp_path)
+
+    assert any(
+        error == "playbook row 2 (run_pressure): run plays must use beats_pressure='none', got 'edge_blitz'."
+        for error in errors
+    )
+
+
+def test_validate_data_rejects_playbook_formation_personnel_mismatch(tmp_path: Path) -> None:
+    """Playbook rows should match formation personnel when the taxonomy provides it."""
+    create_fake_repo(
+        tmp_path,
+        playbook_rows=[build_valid_playbook_row(play_id="bad_personnel", personnel="11")],
+        taxonomy_overrides={"personnel.csv": ["10", "11"]},
+    )
+
+    errors = validate_data(base_dir=tmp_path)
+
+    assert any(
+        error
+        == "playbook row 2 (bad_personnel): personnel '11' does not match formation_id 'gun_1rb_2x2_spread_no_te' personnel '10'."
         for error in errors
     )
 

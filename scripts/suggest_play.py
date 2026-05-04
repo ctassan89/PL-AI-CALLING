@@ -14,6 +14,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 PLAYBOOK_PATH = BASE_DIR / "data" / "playbook.csv"
 DEFAULT_TENDENCIES_PATH = BASE_DIR / "data" / "opponent_tendencies.csv"
 FORMATION_TAXONOMY_PATH = BASE_DIR / "data" / "taxonomy" / "formations.csv"
+PRESSURE_TAXONOMY_PATH = BASE_DIR / "data" / "allowed_values" / "pressure.csv"
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -36,6 +37,16 @@ def load_formation_names() -> dict[str, str]:
         }
 
 
+def load_allowed_values(path: Path) -> set[str]:
+    """Load a one-column `value` CSV into a normalized value set."""
+    with path.open(newline="") as handle:
+        return {
+            str(row.get("value", "")).strip().lower()
+            for row in csv.DictReader(handle)
+            if str(row.get("value", "")).strip()
+        }
+
+
 def positive_int(value: str) -> int:
     """Parse a positive integer CLI argument."""
     parsed = int(value)
@@ -55,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--formation-id", dest="formation_id")
     parser.add_argument("--front-id", "--front", dest="front_id")
     parser.add_argument("--coverage-id", "--coverage", dest="coverage_id")
+    parser.add_argument("--pressure-id", dest="pressure_id")
     parser.add_argument("--box-count", type=int, required=True, dest="box_count")
     parser.add_argument("--personnel")
     parser.add_argument("--opponent")
@@ -183,11 +195,14 @@ def print_recommendations(
     *,
     top_n: int,
     show_reasons: bool,
+    pressure_id: str,
     formation_names: dict[str, str],
     playbook_rows: dict[str, dict[str, object]],
 ) -> None:
     """Print a compact recommendation list."""
     print(f"Top {top_n} recommended plays:\n")
+    if is_meaningful(pressure_id):
+        print(f"Pressure context: {pressure_id}\n")
 
     for rank, play in enumerate(plays, start=1):
         play_details = playbook_rows.get(str(play.get("play_id", "")), play)
@@ -222,6 +237,13 @@ def main() -> None:
     playbook = pd.read_csv(Path(args.playbook_path))
     formation_names = load_formation_names()
     playbook_rows = load_playbook_rows(playbook)
+    pressure_values = load_allowed_values(PRESSURE_TAXONOMY_PATH)
+    pressure_id = normalize_text(args.pressure_id).lower() or "none"
+    if pressure_id not in pressure_values:
+        valid_values = ", ".join(sorted(pressure_values))
+        raise SystemExit(
+            f"Invalid --pressure-id '{pressure_id}'. Allowed values: {valid_values}"
+        )
 
     situation = build_situation(
         down=args.down,
@@ -230,6 +252,7 @@ def main() -> None:
         formation_id=args.formation_id,
         front_id=args.front_id,
         coverage_id=args.coverage_id,
+        pressure_id=pressure_id,
         box_count=args.box_count,
         personnel=args.personnel,
         opponent=args.opponent,
@@ -265,6 +288,7 @@ def main() -> None:
         top_plays,
         top_n=min(args.top_n, len(top_plays)),
         show_reasons=args.show_reasons,
+        pressure_id=pressure_id,
         formation_names=formation_names,
         playbook_rows=playbook_rows,
     )

@@ -10,6 +10,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 TAXONOMY_DIR = DATA_DIR / "taxonomy"
+ALLOWED_VALUES_DIR = DATA_DIR / "allowed_values"
 PLAYBOOK_PATH = DATA_DIR / "playbook.csv"
 OPPONENT_TENDENCIES_PATH = DATA_DIR / "opponent_tendencies.csv"
 FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "formations.csv"
@@ -42,6 +43,7 @@ PLAYBOOK_COLUMNS = [
     "personnel",
     "beats_front",
     "beats_coverage",
+    "beats_pressure",
     "beats_box",
     "preferred_down_distance",
     "preferred_field_zone",
@@ -64,6 +66,7 @@ SINGLE_VALUE_TAXONOMIES = {
 MULTI_VALUE_TAXONOMIES = {
     "beats_front": "beats_front.csv",
     "beats_coverage": "beats_coverage.csv",
+    "beats_pressure": "allowed_values/pressure.csv",
     "beats_box": "beats_box.csv",
     "preferred_down_distance": "preferred_down_distance.csv",
     "preferred_field_zone": "preferred_field_zone.csv",
@@ -90,6 +93,11 @@ REQUIRED_DEFENSIVE_TENDENCY_COLUMNS = {
     "success_rate_allowed",
     "epa_allowed",
     "notes",
+}
+
+FORMATION_TAXONOMY_REQUIRED_COLUMNS = {
+    "formation_id",
+    "formation_name",
 }
 
 
@@ -186,9 +194,57 @@ def load_single_column_taxonomy(
     return values
 
 
+def taxonomy_source_path(
+    data_dir: Path,
+    taxonomy_dir: Path,
+    source: str,
+) -> Path:
+    """Resolve a taxonomy source path from data/taxonomy or data/allowed_values."""
+    if "/" in source:
+        return data_dir / source
+    return taxonomy_dir / source
+
+
 def load_id_set(path: Path, id_column: str) -> set[str]:
     """Load an ID column from a taxonomy CSV."""
     return {get_row_value(row, id_column) for row in load_csv_rows(path) if get_row_value(row, id_column)}
+
+
+def load_formation_personnel_map(
+    path: Path,
+    columns: list[str],
+    allowed_personnel: set[str],
+    errors: list[str],
+) -> dict[str, str]:
+    """Load the expected personnel for each formation when available."""
+    if not columns:
+        return {}
+    if not FORMATION_TAXONOMY_REQUIRED_COLUMNS.issubset(columns):
+        return {}
+
+    if "personnel" not in columns:
+        return {}
+
+    formation_personnel: dict[str, str] = {}
+    for index, row in enumerate(load_csv_rows(path), start=2):
+        formation_id = get_row_value(row, "formation_id")
+        personnel = get_row_value(row, "personnel")
+        if not formation_id:
+            errors.append(f"formations.csv row {index}: formation_id is blank.")
+            continue
+        if not personnel:
+            errors.append(
+                f"formations.csv row {index} ({formation_id}): personnel is blank."
+            )
+            continue
+        if personnel not in allowed_personnel:
+            errors.append(
+                f"formations.csv row {index} ({formation_id}): invalid personnel '{personnel}'."
+            )
+            continue
+        formation_personnel[formation_id] = personnel
+
+    return formation_personnel
 
 
 def add_unknown_id_errors(
@@ -205,6 +261,30 @@ def add_unknown_id_errors(
             label = f" ({get_row_value(row, label_column)})" if label_column else ""
             errors.append(
                 f"row {index}{label}: {column_name} '{value}' was not found in its taxonomy."
+            )
+
+
+def add_formation_personnel_mismatch_errors(
+    errors: list[str],
+    rows: list[dict[str, str]],
+    formation_column: str,
+    personnel_column: str,
+    formation_personnel_map: dict[str, str],
+    dataset_label: str,
+    label_column: str | None = None,
+) -> None:
+    """Ensure row personnel matches the taxonomy for the selected formation."""
+    for index, row in enumerate(rows, start=2):
+        formation_id = get_row_value(row, formation_column)
+        personnel = get_row_value(row, personnel_column)
+        expected_personnel = formation_personnel_map.get(formation_id)
+        if not formation_id or not personnel or not expected_personnel:
+            continue
+        if personnel != expected_personnel:
+            label = f" ({get_row_value(row, label_column)})" if label_column else ""
+            errors.append(
+                f"{dataset_label} row {index}{label}: {personnel_column} '{personnel}' "
+                f"does not match {formation_column} '{formation_id}' personnel '{expected_personnel}'."
             )
 
 
@@ -310,6 +390,23 @@ def add_run_scheme_modifier_pair_errors(
             )
 
 
+def add_run_pressure_errors(
+    errors: list[str],
+    rows: list[dict[str, str]],
+) -> None:
+    """Require pure run plays to use beats_pressure=none."""
+    for index, row in enumerate(rows, start=2):
+        play_type = get_row_value(row, "play_type")
+        beats_pressure = get_row_value(row, "beats_pressure")
+        if play_type != "run":
+            continue
+        if beats_pressure != "none":
+            play_id = get_row_value(row, "play_id")
+            errors.append(
+                f"playbook row {index} ({play_id}): run plays must use beats_pressure='none', got '{beats_pressure}'."
+            )
+
+
 def validate_data(base_dir: Path | None = None) -> list[str]:
     """Validate CSV data files under a repository base dir."""
     base_dir = Path(base_dir) if base_dir is not None else BASE_DIR
@@ -344,7 +441,7 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
 
     taxonomy_values = {
         column_name: load_single_column_taxonomy(
-            taxonomy_dir / filename,
+            taxonomy_source_path(data_dir, taxonomy_dir, filename),
             errors,
             base_dir,
         )
@@ -370,6 +467,22 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
             (get_row_value(row, "run_scheme"), get_row_value(row, "run_modifier"))
             for row in load_csv_rows(valid_run_pair_path)
         }
+
+    formation_columns = require_columns(formation_taxonomy_path, errors, base_dir)
+    if formation_columns:
+        add_missing_column_errors(
+            errors,
+            formation_columns,
+            FORMATION_TAXONOMY_REQUIRED_COLUMNS,
+            "formations.csv",
+        )
+
+    formation_personnel_map = load_formation_personnel_map(
+        formation_taxonomy_path,
+        formation_columns,
+        taxonomy_values["personnel"],
+        errors,
+    )
 
     if errors:
         return errors
@@ -460,6 +573,17 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
         taxonomy_values["run_scheme"],
         taxonomy_values["run_modifier"],
         valid_run_pairs,
+    )
+    add_run_pressure_errors(errors, playbook)
+
+    add_formation_personnel_mismatch_errors(
+        errors,
+        playbook,
+        "formation_id",
+        "personnel",
+        formation_personnel_map,
+        "playbook",
+        "play_id",
     )
 
     return errors

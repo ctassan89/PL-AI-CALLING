@@ -86,8 +86,8 @@ MEDIUM_LONG_TAGS = {
 }
 SLOW_DEVELOPING_CONCEPTS = {"flood", "four_verts", "verts", "dagger", "y_cross", "levels"}
 DEEP_SHOT_CONCEPTS = {"four_verts", "verts", "post", "go", "mills"}
-QUICK_GAME_CONCEPTS = {"slant_flat", "spacing", "stick", "curl_flat", "snag", "hitch", "mesh"}
-SCREEN_CONCEPTS = {"screen", "screens", "now_screen", "bubble"}
+QUICK_GAME_CONCEPTS = {"slant_flat", "spacing", "stick", "curl_flat", "snag", "hitch", "mesh", "wr_tunnel_screen"}
+SCREEN_CONCEPTS = {"screen", "screens", "now_screen", "bubble", "rb_screen", "wr_tunnel_screen"}
 GAP_SCHEMES = {"duo", "power", "counter", "trap", "iso", "pin_pull"}
 ZONE_SCHEMES = {"inside_zone", "outside_zone", "wide_zone", "stretch"}
 PERIMETER_RUN_SCHEMES = {"outside_zone", "wide_zone", "jet", "toss", "sweep"}
@@ -257,6 +257,7 @@ def build_situation(
     formation_id: str | None = None,
     front_id: str | None = None,
     coverage_id: str | None = None,
+    pressure_id: str | None = None,
     box_count: int | str | None = None,
     personnel: str | None = None,
     opponent: str | None = None,
@@ -286,6 +287,7 @@ def build_situation(
         families = sorted(COVERAGE_FAMILY.get(normalize_text(coverage_id), set()))
         if families:
             situation["coverage_family"] = ";".join(families)
+    situation["pressure_id"] = normalize_text(pressure_id) if pressure_id is not None else "none"
     if box_count is not None:
         numeric_box = int(box_count)
         situation["box_count"] = numeric_box
@@ -448,6 +450,11 @@ def normalize_beats_coverage(play: pd.Series) -> set[str]:
     return set(parse_list(play_series_value(play, "beats_coverage")))
 
 
+def normalize_beats_pressure(play: pd.Series) -> set[str]:
+    """Normalize playbook pressure answers."""
+    return set(parse_list(play_series_value(play, "beats_pressure")))
+
+
 def exact_down_distance_match(play: pd.Series, situation: Situation) -> bool:
     """Return whether the play has an exact down-distance tag match."""
     return str(situation["down_distance_tag"]) in normalize_preferred_down_distance(play)
@@ -463,14 +470,31 @@ def exact_defensive_match_count(play: pd.Series, situation: Situation) -> int:
     count = 0
     front_id = normalize_text(situation.get("front_id"))
     coverage_id = normalize_text(situation.get("coverage_id"))
+    pressure_id = normalize_text(situation.get("pressure_id"))
     box_label = normalize_text(situation.get("box_label"))
     if front_id and front_id in parse_list(play_series_value(play, "beats_front")):
         count += 1
     if coverage_id and coverage_id in normalize_beats_coverage(play):
         count += 1
+    if pressure_id and pressure_id != "none" and pressure_id in normalize_beats_pressure(play):
+        count += 1
     if box_label and box_label in normalize_beats_box(play):
         count += 1
     return count
+
+
+def pressure_match_kind(play: pd.Series, situation: Situation) -> tuple[str, str]:
+    """Return the pressure match kind and matched label."""
+    pressure_id = normalize_text(situation.get("pressure_id"))
+    if not pressure_id or pressure_id == "none":
+        return "none", ""
+
+    pressure_values = normalize_beats_pressure(play)
+    if pressure_id in pressure_values:
+        return "exact", pressure_id
+    if "any_pressure" in pressure_values:
+        return "any", "any_pressure"
+    return "none", ""
 
 
 def score_down_distance(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
@@ -721,6 +745,47 @@ def score_defensive_structure(play: pd.Series, situation: Situation) -> tuple[fl
             score += add_reason(reasons, 3.0, f"box: related fit for {box_label}")
 
     return score, reasons
+
+
+def score_pressure_fit(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
+    """Score explicit pressure answers separately from coverage structure."""
+    pressure_id = normalize_text(situation.get("pressure_id"))
+    if not pressure_id or pressure_id == "none":
+        return 0.0, []
+
+    score = 0.0
+    reasons: list[str] = []
+    tags = infer_play_tags(play)
+    pressure_kind, matched_label = pressure_match_kind(play, situation)
+    protection = normalize_text(play_series_value(play, "protection"))
+    play_action = is_play_action(play, tags)
+    deep_concept = is_deep_concept(play, tags)
+
+    if pressure_kind == "exact":
+        score += add_reason(reasons, 8.0, f"pressure: exact match {matched_label}")
+    elif pressure_kind == "any":
+        score += add_reason(reasons, 5.0, f"pressure: any_pressure matches {pressure_id}")
+
+    if play_action:
+        score += add_reason(reasons, -6.0, "risk: play_action is risky against pressure")
+    if deep_concept:
+        score += add_reason(reasons, -4.0, "risk: deep_shot is slower against pressure")
+    if protection == "6man" and pressure_id in {"edge_blitz", "inside_blitz"}:
+        score += add_reason(reasons, 2.0, f"protection: 6man helps versus {pressure_id}")
+    if protection == "quick":
+        score += add_reason(reasons, 3.0, "tactical: quick protection helps versus pressure")
+    if protection == "screen":
+        score += add_reason(reasons, 4.0, "tactical: screen protection helps versus pressure")
+    if "hot_answer" in tags:
+        score += add_reason(reasons, 4.0, "tactical: hot_answer is useful against pressure")
+    if "quick_game" in tags:
+        score += add_reason(reasons, 3.0, "tactical: quick_game is useful against pressure")
+    if "screen" in tags:
+        score += add_reason(reasons, 4.0, "tactical: screen is useful against pressure")
+    if {"pressure_beater", "blitz_beater"} & tags:
+        score += add_reason(reasons, 4.0, "tactical: tagged pressure answer")
+
+    return clamp(score, -10.0, 20.0), reasons
 
 
 def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, list[str]]:
@@ -1109,6 +1174,7 @@ def score_play(play: pd.Series, situation: Situation) -> Recommendation:
     defensive_structure_score, defensive_structure_reasons = score_defensive_structure(
         play, situation
     )
+    pressure_score, pressure_reasons = score_pressure_fit(play, situation)
     tactical_fit_score, tactical_fit_reasons = score_tactical_fit(play, situation)
     formation_personnel_score, formation_personnel_reasons = score_formation_personnel(
         play, situation
@@ -1119,6 +1185,7 @@ def score_play(play: pd.Series, situation: Situation) -> Recommendation:
         down_distance_score
         + field_zone_score
         + defensive_structure_score
+        + pressure_score
         + tactical_fit_score
         + formation_personnel_score
         + risk_reward_score,
@@ -1129,6 +1196,7 @@ def score_play(play: pd.Series, situation: Situation) -> Recommendation:
         *down_distance_reasons,
         *field_zone_reasons,
         *defensive_structure_reasons,
+        *pressure_reasons,
         *tactical_fit_reasons,
         *formation_personnel_reasons,
         *risk_reward_reasons,
@@ -1152,6 +1220,7 @@ def score_play(play: pd.Series, situation: Situation) -> Recommendation:
             "down_distance": down_distance_score,
             "field_zone": field_zone_score,
             "defensive_structure": defensive_structure_score,
+            "pressure": pressure_score,
             "tactical_fit": tactical_fit_score,
             "formation_personnel": formation_personnel_score,
             "risk_reward": risk_reward_score,

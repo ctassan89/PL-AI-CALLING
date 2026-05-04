@@ -36,6 +36,7 @@ def make_play(**overrides: object) -> dict[str, object]:
         "personnel": "11",
         "beats_front": "any",
         "beats_coverage": "any",
+        "beats_pressure": "none",
         "beats_box": "any",
         "preferred_down_distance": "early_down",
         "preferred_field_zone": "any",
@@ -65,6 +66,7 @@ class RecommendationEngineTests(unittest.TestCase):
             formation_id=kwargs.pop("formation_id", "gun_11_2x2"),
             front_id=kwargs.pop("front_id", "odd_tite"),
             coverage_id=kwargs.pop("coverage_id", "cover3"),
+            pressure_id=kwargs.pop("pressure_id", "none"),
             box_count=kwargs.pop("box_count", 6),
             personnel=kwargs.pop("personnel", "11"),
         )
@@ -79,6 +81,7 @@ class RecommendationEngineTests(unittest.TestCase):
             formation_id=kwargs.pop("formation_id", "gun_11_2x2"),
             front_id=kwargs.pop("front_id", "odd_tite"),
             coverage_id=kwargs.pop("coverage_id", "cover3"),
+            pressure_id=kwargs.pop("pressure_id", "none"),
             box_count=kwargs.pop("box_count", 6),
             personnel=kwargs.pop("personnel", "11"),
         )
@@ -1018,6 +1021,131 @@ class RecommendationEngineTests(unittest.TestCase):
             personnel="10",
         )
         self.assertEqual(situation["down_distance_tag"], "fourth_long")
+
+    def test_pressure_match_boosts_exact_pressure_answer(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="stick_answer",
+                    pass_concept="stick",
+                    beats_pressure="edge_blitz;field_blitz;nickel_blitz;sim_pressure",
+                    tags="quick_game;hot_answer",
+                    preferred_down_distance="third_medium",
+                ),
+                make_play(
+                    play_id="generic",
+                    pass_concept="y_cross",
+                    beats_pressure="none",
+                    preferred_down_distance="third_medium",
+                ),
+            ],
+            down=3,
+            distance=6,
+            field_zone="open_field",
+            coverage_id="cover1",
+            pressure_id="nickel_blitz",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        answer = next(play for play in recommendations if play["play_id"] == "stick_answer")
+        self.assertEqual(ids(recommendations)[:2], ["stick_answer", "generic"])
+        self.assertTrue(any("exact match nickel_blitz" in reason for reason in answer["reasons"]))
+
+    def test_rb_screen_gets_inside_blitz_pressure_bonus(self) -> None:
+        scored = self.score(
+            make_play(
+                play_id="rb_screen",
+                pass_concept="rb_screen",
+                protection="screen",
+                beats_pressure="any_pressure;inside_blitz;double_a_gap;zero_pressure",
+                tags="screen;quick_game;hot_answer",
+                preferred_down_distance="third_long",
+            ),
+            down=3,
+            distance=9,
+            field_zone="open_field",
+            pressure_id="inside_blitz",
+            coverage_id="cover1",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        text = " ".join(scored["reasons"])
+        self.assertIn("exact match inside_blitz", text)
+        self.assertIn("screen is useful against pressure", text)
+
+    def test_pressure_beaters_do_not_get_free_points_when_pressure_is_none(self) -> None:
+        with_pressure = self.score(
+            make_play(
+                play_id="quick",
+                pass_concept="stick",
+                protection="quick",
+                beats_pressure="edge_blitz;field_blitz;nickel_blitz;sim_pressure",
+                tags="quick_game;hot_answer",
+                preferred_down_distance="third_medium",
+            ),
+            down=3,
+            distance=6,
+            pressure_id="nickel_blitz",
+            coverage_id="cover3",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        no_pressure = self.score(
+            make_play(
+                play_id="quick",
+                pass_concept="stick",
+                protection="quick",
+                beats_pressure="edge_blitz;field_blitz;nickel_blitz;sim_pressure",
+                tags="quick_game;hot_answer",
+                preferred_down_distance="third_medium",
+            ),
+            down=3,
+            distance=6,
+            pressure_id="none",
+            coverage_id="cover3",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        self.assertGreater(with_pressure["score"], no_pressure["score"])
+        self.assertFalse(any("pressure:" in reason for reason in no_pressure["reasons"]))
+
+    def test_pressure_penalizes_slow_play_action_vs_quick_answer(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="slow_pa",
+                    pass_concept="dagger",
+                    play_action="true",
+                    protection="6man",
+                    beats_pressure="none",
+                    preferred_down_distance="third_long",
+                    tags="deep_shot;play_action",
+                ),
+                make_play(
+                    play_id="quick_answer",
+                    pass_concept="stick",
+                    protection="quick",
+                    beats_pressure="edge_blitz;field_blitz;nickel_blitz;sim_pressure",
+                    preferred_down_distance="third_medium",
+                    tags="quick_game;hot_answer",
+                ),
+            ],
+            down=3,
+            distance=8,
+            field_zone="open_field",
+            coverage_id="cover1",
+            pressure_id="sim_pressure",
+            front_id="even",
+            box_count=6,
+            personnel="10",
+        )
+        slow = next(play for play in recommendations if play["play_id"] == "slow_pa")
+        self.assertEqual(ids(recommendations)[:2], ["quick_answer", "slow_pa"])
+        self.assertTrue(any("play_action is risky against pressure" in reason for reason in slow["reasons"]))
 
 
 if __name__ == "__main__":
