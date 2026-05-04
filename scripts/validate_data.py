@@ -10,7 +10,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 TAXONOMY_DIR = DATA_DIR / "taxonomy"
-ALLOWED_VALUES_DIR = DATA_DIR / "allowed_values"
 PLAYBOOK_PATH = DATA_DIR / "playbook.csv"
 OPPONENT_TENDENCIES_PATH = DATA_DIR / "opponent_tendencies.csv"
 FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "formations.csv"
@@ -66,7 +65,7 @@ SINGLE_VALUE_TAXONOMIES = {
 MULTI_VALUE_TAXONOMIES = {
     "beats_front": "beats_front.csv",
     "beats_coverage": "beats_coverage.csv",
-    "beats_pressure": "allowed_values/pressure.csv",
+    "beats_pressure": "pressure.csv",
     "beats_box": "beats_box.csv",
     "preferred_down_distance": "preferred_down_distance.csv",
     "preferred_field_zone": "preferred_field_zone.csv",
@@ -199,7 +198,7 @@ def taxonomy_source_path(
     taxonomy_dir: Path,
     source: str,
 ) -> Path:
-    """Resolve a taxonomy source path from data/taxonomy or data/allowed_values."""
+    """Resolve a taxonomy source path from data/taxonomy or a relative data path."""
     if "/" in source:
         return data_dir / source
     return taxonomy_dir / source

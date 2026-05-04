@@ -124,10 +124,8 @@ def create_fake_repo(
 ) -> Path:
     """Create a minimal fake repo layout with valid taxonomy and data."""
     taxonomy_dir = tmp_path / "data" / "taxonomy"
-    allowed_values_dir = tmp_path / "data" / "allowed_values"
     playbook_path = tmp_path / "data" / "playbook.csv"
     taxonomy_dir.mkdir(parents=True, exist_ok=True)
-    allowed_values_dir.mkdir(parents=True, exist_ok=True)
 
     single_column_taxonomies = {
         "play_family.csv": ["run", "pass", "rpo"],
@@ -170,7 +168,7 @@ def create_fake_repo(
     for filename, values in single_column_taxonomies.items():
         write_single_column_taxonomy(taxonomy_dir / filename, values)
     write_single_column_taxonomy(
-        allowed_values_dir / "pressure.csv",
+        taxonomy_dir / "pressure.csv",
         ["none", "any_pressure", "edge_blitz", "field_blitz", "boundary_blitz", "nickel_blitz", "inside_blitz", "double_a_gap", "zero_pressure", "sim_pressure", "creeper"],
     )
 

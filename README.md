@@ -7,7 +7,7 @@ PL-AI-CALLING is a playbook-aware American football playcalling recommendation e
 - Main playbook: `data/playbook.csv`
 - Opponent tendencies: `data/opponent_tendencies.csv`
 - Taxonomy files: `data/taxonomy/`
-- Pressure allowed values: `data/allowed_values/pressure.csv`
+- Pressure allowed values: `data/taxonomy/pressure.csv`
 
 The repo is designed to work from a fresh clone with the versioned data that ships inside `data/`.
 
