@@ -47,7 +47,7 @@ class GameState:
         if self.field_position <= 80:
             return "opp_territory"
         if self.field_position <= 95:
-            return "redzone"
+            return "red_zone"
         return "goal_line"
 
     def display_yardline(self) -> str:
@@ -67,3 +67,23 @@ class GameState:
             4: "4th",
         }.get(self.down, f"{self.down}th")
         return f"{ordinal} & {self.distance}"
+
+
+@dataclass
+class DefenseState:
+    """Track persistent defensive context for a session."""
+
+    front_id: str = "none"
+    coverage_id: str = "none"
+    pressure_id: str = "none"
+    box_count: int | None = None
+    personnel: str | None = None
+
+    def display(self) -> str:
+        """Render the defensive context in a compact, stable format."""
+        box_text = "none" if self.box_count is None else str(self.box_count)
+        personnel_text = self.personnel if self.personnel is not None else "none"
+        return (
+            f"front={self.front_id}, coverage={self.coverage_id}, "
+            f"pressure={self.pressure_id}, box={box_text}, personnel={personnel_text}"
+        )

@@ -45,3 +45,12 @@ def test_negative_gain_updates_position_and_distance() -> None:
     assert state.down == 3
     assert state.distance == 9
     assert state.status == "active"
+
+
+def test_touchdown_status_when_gain_crosses_goal_line() -> None:
+    state = GameState(down=3, distance=2, field_position=99)
+
+    state.apply_gain(3)
+
+    assert state.field_position == 100
+    assert state.status == "touchdown"

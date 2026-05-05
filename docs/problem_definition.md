@@ -1,67 +1,52 @@
 # Problem Definition
 
-## The Real Problem
+## Problem
 
-Offensive coaches do not need a generic football answer. They need actionable playcalling support that fits their own system.
+Offensive play-callers need to choose real plays from their own inventory based on down, distance, field position, defensive front, coverage, pressure, box count, personnel, and optional opponent tendencies. Generic football advice is not enough if it cannot be converted into an actual callable play from the installed system.
 
-Every offense has its own language, play names, tags, formations, and constraints. A recommendation such as "call a run" or "attack the flat" is too vague to be operational on game day. A useful system must be able to work from the actual playbook the coach carries and turn opponent information into a concrete list of callable plays.
+## Inputs
 
-The real problem, then, is this:
+- Structured playbook
+- Game situation
+- Defensive context
+- Optional opponent tendencies
 
-How do we help a coach select the best plays from their own playbook against the specific defensive tendencies of a given opponent?
+## Output
 
-## Why Generic AI Is Not Enough
+- Ranked list of recommended plays
+- Score for each recommendation
+- Short reasons when requested
 
-A generic AI model can talk about football concepts, but that is not enough for serious playcalling support.
+## Core Design Idea
 
-Generic outputs fail in several important ways:
+The system separates football concepts into structured dimensions instead of relying on a single free-text description:
 
-- they do not understand the coach's custom terminology
-- they do not know which plays are actually installed
-- they cannot reliably distinguish between similar plays with different coaching intent
-- they may recommend concepts that do not exist in the offense
-- they often provide broad advice instead of executable playcalls
+- Coverage
+- Pressure
+- Front
+- Box
+- Down and distance
+- Field zone
+- Personnel
+- Tactical tags
 
-In football, usefulness depends on context and availability. The system must know both what the offense can call and what the defense tends to allow or take away.
+This makes the scoring deterministic, inspectable, and easy to validate from CSV data.
 
-## Why Playbook Modeling Matters
+## Why Pressure Is Separate From Coverage
 
-The playbook is the operational boundary of the offense. It defines the menu of realistic options.
+`cover1` with no pressure and `cover1` with a `nickel_blitz` should not be treated as the same situation. Coverage describes the shell or match structure behind the call. Pressure describes how the defense is attacking the pocket. The recommendation engine keeps those dimensions separate so hot answers, screens, quick game, and slower-developing concepts can be scored more honestly.
 
-To support playcalling, the system must ingest custom play names and map them to a standardized concept layer. That concept layer is necessary because different teams may use different names for the same idea, and the same family of concepts may appear in multiple forms across formations or personnel groupings.
+## Constraints
 
-Playbook modeling makes it possible to:
+- Deterministic and inspectable scoring for the MVP
+- CSV-first data model
+- The validator must catch bad taxonomy values before recommendations are trusted
+- Recommendations should remain explainable
 
-- preserve coach terminology
-- compare plays using shared football concepts
-- group similar calls into families
-- reason about which concepts are available in the offense
+## Success Criteria
 
-Without this layer, the system cannot move from abstract football knowledge to practical recommendation.
-
-## Why Opponent Modeling Matters
-
-Playcalling is not only about what the offense likes. It is also about what the defense shows repeatedly.
-
-Opponent modeling captures tendencies such as:
-
-- coverage preferences
-- front structure
-- pressure frequency
-- situational habits by down, distance, and field area
-- overplays or weaknesses against specific concept families
-
-These tendencies create the tactical context for recommendation. A concept is only valuable if it aligns with what the defense is likely to present or struggle against.
-
-## Final System Behavior
-
-The target system behavior is straightforward and coach-facing:
-
-1. ingest a custom offensive playbook
-2. map each play to a structured football ontology
-3. ingest opponent defensive tendency data
-4. compare available plays against those tendencies
-5. return a ranked list of recommended plays from the coach's own playbook
-6. explain each recommendation in football terms
-
-The system is not intended to replace coaches. It is intended to give them a structured decision-support tool that is grounded in their terminology, their available calls, and the opponent they are preparing to attack.
+- Correct plays rise in realistic situations
+- Pressure beaters rise against pressure
+- Slow-developing plays are penalized under pressure
+- Sequential mode stays consistent across a drive
+- Documentation is clear enough for a new developer to install, validate, test, and run the project

@@ -1,251 +1,167 @@
 # Football Ontology
 
-## Purpose
+This document describes the structured football schema used by PL-AI-CALLING. The goal is to keep playbook data inspectable, validate it against stable taxonomies, and let the recommendation engine reason across consistent football dimensions.
+
+## Playbook Schema
 
-This document defines the initial offensive football taxonomy for PL-AI-CALLING. Its job is to create a shared concept layer between custom playbook terminology and opponent tendency analysis.
+`data/playbook.csv` uses this column order:
 
-The ontology is intentionally practical rather than exhaustive. It is designed to support play mapping, opponent matching, and recommendation logic in early project phases.
+- `play_id`: stable internal identifier
+- `play_name`: coach-facing display name
+- `play_family`: broad tactical family such as `dropback`, `run`, `rpo`, or `screen`
+- `play_type`: primary type such as `run`, `pass`, or `rpo`
+- `run_scheme`: canonical run concept
+- `run_modifier`: variation on the run concept
+- `pass_concept`: canonical pass concept
+- `pass_modifier`: variation on the pass concept
+- `protection`: protection family used by the pass concept
+- `rpo_tag`: quick answer paired with an RPO when applicable
+- `play_action`: `true` or `false`
+- `formation_id`: formation taxonomy key
+- `personnel`: offensive personnel grouping
+- `beats_front`: fronts or front families the play answers
+- `beats_coverage`: coverages or coverage families the play answers
+- `beats_pressure`: pressures the play answers
+- `beats_box`: box structures the play answers
+- `preferred_down_distance`: situational down-and-distance tags
+- `preferred_field_zone`: situational field-zone tags
+- `tags`: tactical descriptors for explainability and tie-breaking
 
-## A. Play Types
+## Coverage Ontology
 
-### Run
+`beats_coverage` is only for coverage answers. Pressure is modeled separately.
+
+Supported values in the repo and engine:
 
-Designed to advance the ball primarily on the ground through a handoff, quarterback run, or run-action structure.
+- `none`
+- `zone`
+- `man`
+- `cover1`
+- `cover2`
+- `cover3`
+- `cover4`
+- `match`
+- `soft_zone`
 
-### Pass
+Use coverage values when the play is designed to answer structure, leverage, or rotation rules in coverage.
 
-Designed to attack through the air, whether by quick rhythm throws, full dropback concepts, movement passes, or run-pass conflict structures.
+## Pressure Ontology
 
-## B. Run Families
+Pressure is separate from coverage. A call that handles `cover1` with no pressure is not automatically the same answer versus `cover1` plus blitz.
 
-Run concepts are commonly grouped into `zone`, `gap`, and `man` blocking structures, with the exact play family shaped by the point of attack, back read, and blocking intent. This is a useful organizing model for the project's ontology and aligns with common coaching language described in the [GoRout run concepts overview](https://gorout.com/football-running-plays/).
+Supported values:
 
-### Inside Zone
+- `none`
+- `any_pressure`
+- `edge_blitz`
+- `field_blitz`
+- `boundary_blitz`
+- `nickel_blitz`
+- `inside_blitz`
+- `double_a_gap`
+- `zero_pressure`
+- `sim_pressure`
+- `creeper`
 
-Zone run aimed inside the tackle box. Linemen work area-based combinations while the runner reads interior leverage and vertical seams.
+Use `beats_pressure` when the play is a hot answer, screen, protection-friendly concept, or another specific blitz answer.
 
-### Outside Zone
+## Front Ontology
 
-Zone run designed to stretch the defense horizontally before the runner chooses to bounce, bang, or bend the ball.
+`front_id` describes the defensive structure in the current situation. `beats_front` lists which fronts a play is intended to answer.
 
-### Power
+Current playbook-facing values in the repo:
 
-Gap-scheme run built around a defined point of attack, usually with a puller and lead blocker creating an extra gap.
+- `none`
+- `any`
+- `even`
+- `over`
+- `under`
+- `odd`
+- `odd_tite`
+- `bear`
 
-### Counter
+The front taxonomy file in `data/taxonomy/fronts.csv` also maps higher-detail IDs such as `even_4`, `even_over`, `even_under`, `odd_3`, and `odd_mint` to broader structure families. For playbook tagging, stay with currently supported playbook values unless the validator and recommendation layer are extended together.
 
-Gap-scheme run that uses backfield misdirection and a puller or pullers to influence linebackers and create a delayed point of attack.
+## Box Ontology
 
-### Duo
+`box_count` is the numeric game-state input. The engine converts it into box labels used by `beats_box`.
 
-Physical downhill run often mistaken for inside zone, but built on double teams and linebacker displacement rather than classic zone tracks.
+Current playbook values:
 
-### Trap
+- `none`
+- `light_box`
+- `normal_box`
+- `heavy_box`
+- `loaded_box`
 
-Quick-hitting run that invites penetration from a defender who is then trapped by an unexpected blocker, often a pulling lineman or H-back.
+Current engine mapping:
 
-### Draw
+- `5` or fewer -> `light_box`
+- `6` -> `normal_box`
+- `7` -> `heavy_box`
+- `8` or more -> `loaded_box`
 
-Delayed run designed to influence pass rush and coverage depth before handing the ball off into lighter interior spacing.
+## Protection Ontology
 
-### Screen
+`protection` describes the high-level pass protection family used by the play.
 
-Constraint run/pass family that uses misdirection, delayed release, and blockers in space to attack aggressive pursuit.
+Supported values:
 
-## C. Pass Families
+- `none`
+- `quick`
+- `5man`
+- `6man`
+- `boot`
+- `screen`
 
-### Quick Game
+## Down/Distance Ontology
 
-Fast-timing pass concepts built for rhythm, leverage reads, and efficient ball distribution.
+`preferred_down_distance` is a playbook-side situational tag, not raw yardage input. The engine builds a tag from `down` plus a normalized distance bucket, then rewards exact or related matches.
 
-### Dropback
+Current values:
 
-Traditional pass game from the pocket with deeper route development and fuller field reads.
+- `early_down`
+- `second_short`
+- `second_medium`
+- `second_long`
+- `third_short`
+- `third_medium`
+- `third_long`
+- `fourth_short`
+- `fourth_medium`
+- `fourth_long`
 
-### Play Action
+## Field Zone Ontology
 
-Pass concepts paired with run action to influence second-level defenders and create throwing windows behind them.
+The engine accepts normalized field-zone tags. The sequential session computes them from `field_position`.
 
-### RPO
+Session-friendly mapping:
 
-Run-pass option structure that places a defender or coverage rule in conflict and lets the quarterback decide post-snap or pre-snap.
+- `0-40` -> `own_territory`
+- `41-60` -> `midfield`
+- `61-80` -> `opp_territory`
+- `81-95` -> `red_zone`
+- `96-100` -> `goal_line`
 
-### Bootleg
+Engine-side normalization then maps those aliases into its scoring vocabulary, including `open_field`, `high_redzone`, `redzone`, and `goal_line`.
 
-Movement pass off run action, often changing the launch point and stressing edge defenders and underneath coverage.
+## Tags
 
-### Screen
+`tags` are tactical descriptors. They help explain and separate plays, but they do not replace structured fields such as coverage, pressure, front, box, personnel, or field zone.
 
-Perimeter or interior pass designed to get the ball out quickly with blockers in front and punish pressure or soft cushion.
+Examples already used or supported by the repo include:
 
-## D. Core Pass Concepts
+- `quick_game`
+- `hot_answer`
+- `screen`
+- `pressure_beater`
+- `man_beater`
+- `zone_beater`
+- `match_beater`
+- `deep_shot`
+- `intermediate_pass`
+- `constraint`
 
-### Mesh
+## Nomenclature Rule
 
-Crossing-route concept built around shallow drags that create traffic and separation underneath. It is widely regarded as a strong man-coverage answer, including in coaching discussions such as this [Mesh concept breakdown](https://coachkoufootball.substack.com/p/top-3rd-down-passing-concepts-in).
-
-### Stick
-
-Quick-game concept built around a stick or option route paired with a flat control route, often used to isolate curl-flat defenders.
-
-### Flood
-
-Three-level stretch concept that overloads one sideline or zone structure with deep, intermediate, and short options.
-
-### Curl/Flat
-
-Quick-game high-low concept that reads a flat defender by pairing a curl or hitch element with an immediate route to the flat.
-
-### Four Verticals
-
-Vertical spacing concept designed to stress deep coverage integrity, seams, and safety leverage.
-
-### Smash
-
-Classic corner-flat stretch with a short route underneath and a corner route over the top, often used against Cover 2 structures.
-
-### Y-Cross
-
-Intermediate/deep crossing concept that creates a horizontal and vertical stress point through an over route from a featured receiver, often the tight end or inside receiver.
-
-## E. Concept Definitions
-
-### Inside Zone
-
-- type: run
-- description: Interior zone run with combination blocks and a one-cut read by the back.
-- beats: light boxes, overaggressive interior flow, fronts vulnerable to vertical displacement
-- weak_against: heavy interior penetration, overloaded boxes, dominant interior defensive tackles
-
-### Outside Zone
-
-- type: run
-- description: Perimeter-oriented zone run that stretches the defense horizontally before the runner makes a cut.
-- beats: static fronts, slow edge setting, linebackers that overfit inside
-- weak_against: fast-flow defenses, hard edge setters, heavy backside pursuit
-
-### Power
-
-- type: run
-- description: Gap run with a designed point of attack and a puller creating an extra blocker at the hole.
-- beats: even fronts, soft edge support, defenses that struggle with downhill gap fits
-- weak_against: heavy penetration, wrong-arm techniques, overloaded run blitzes into the point of attack
-
-### Counter
-
-- type: run
-- description: Misdirection gap run that influences linebackers before hitting a delayed lane with pull support.
-- beats: fast-flow linebackers, aggressive second-level trigger, defenses that overreact to initial backfield action
-- weak_against: disciplined box defenders, edge disruption, penetration that blows up timing
-
-### Duo
-
-- type: run
-- description: Downhill run based on double teams and linebacker reads, often attacking interior structure with physical displacement.
-- beats: two-high structures, lighter boxes, linebackers slow to fit downhill
-- weak_against: interior run blitzes, stacked boxes, quick penetration in the A and B gaps
-
-### Trap
-
-- type: run
-- description: Quick interior run that uses a trapping blocker against an upfield defensive lineman.
-- beats: penetrating defensive tackles, aggressive interior fronts, slant-heavy movement
-- weak_against: disciplined read defenders, backfield disruption, muddy interior traffic
-
-### Draw
-
-- type: run
-- description: Delayed handoff that uses pass look and pass rush behavior to open interior running lanes.
-- beats: aggressive pass rush, light boxes in passing situations, defenders bailing into coverage depth
-- weak_against: disciplined spy or green-dog defenders, interior penetration, obvious draw tendency
-
-### Screen
-
-- type: run/pass
-- description: Perimeter or interior constraint play that gets the ball to a runner or receiver behind blockers in space.
-- beats: heavy pressure, overaggressive pursuit, defenders playing with soft tackling angles
-- weak_against: disciplined retrace, well-triggered perimeter support, defenders reading screen cues early
-
-### Quick Game
-
-- type: pass
-- description: Rhythm-based pass family using short timing routes and leverage-based reads.
-- beats: off coverage, soft cushions, pressure looks that require fast answers
-- weak_against: tight press with disruption, passing-lane defenders, condensed throwing windows
-
-### Dropback
-
-- type: pass
-- description: Traditional pocket pass family with fuller route development and progression structure.
-- beats: predictable coverage rotations, defenses that cannot pressure with four, favorable matchup isolations
-- weak_against: fast pressure, protection breakdowns, disguised post-snap rotation
-
-### Play Action
-
-- type: pass
-- description: Pass family using run action to move linebackers and create intermediate or deep windows.
-- beats: downhill linebackers, aggressive run defenders, coverage units that overfit the run
-- weak_against: disciplined second-level defenders, heavy pressure that disrupts the fake, long-yardage situations where run action has less effect
-
-### RPO
-
-- type: pass
-- description: Conflict-based family pairing run action with a quick passing answer keyed to a specific defender or leverage cue.
-- beats: overfit box defenders, conflict players in the curl-flat or hook zones, numbers disadvantages in the box or perimeter
-- weak_against: muddy post-snap pictures, disguised rotations, defenders coached to exchange responsibilities cleanly
-
-### Bootleg
-
-- type: pass
-- description: Movement pass that changes the launch point and typically works off outside zone or similar run action.
-- beats: aggressive backside pursuit, static underneath coverage, edge defenders crashing hard on run action
-- weak_against: disciplined contain players, fast pursuit to the launch point, pressure off naked edges
-
-### Mesh
-
-- type: pass
-- description: Shallow-cross concept that creates traffic and separation underneath.
-- beats: man coverage, Cover 1, Cover 0, defenders chasing across the field
-- weak_against: disciplined zone drops, robber help inside, pressure that hits before routes develop
-
-### Stick
-
-- type: pass
-- description: Quick-game concept pairing a stick route with a flat route to stress curl-flat leverage.
-- beats: soft zone, off coverage, linebackers slow to widen
-- weak_against: tight man leverage, reroutes on the inside receiver, fast downhill flat defenders
-
-### Flood
-
-- type: pass
-- description: Three-level stretch concept that overloads one side of the field.
-- beats: Cover 3, spot-drop zone, corner-flat defenders forced to defend multiple levels
-- weak_against: pressure to the rollout side, match coverage passing routes cleanly, tight sideline spacing
-
-### Curl/Flat
-
-- type: pass
-- description: Simple high-low on the flat defender using a short outside settle route and a route to the flat.
-- beats: Cover 2, Cover 3, soft underneath zone leverage
-- weak_against: tight man coverage, trap corners, defenders jumping the flat quickly
-
-### Four Verticals
-
-- type: pass
-- description: Vertical spacing concept that attacks seams and deep safety leverage with four upfield threats.
-- beats: single-high seam stress, Cover 3 voids, safeties late to widen or carry vertical routes
-- weak_against: quick pressure, deep two-high structures with disciplined landmark play, protection issues
-
-### Smash
-
-- type: pass
-- description: Corner-flat stretch concept using a short hitch or sit route underneath a corner route.
-- beats: Cover 2, squat corners, flat defenders forced to choose between short and deep threats
-- weak_against: man coverage with strong corner leverage, pressure disrupting timing, defenses matching the corner route well
-
-### Y-Cross
-
-- type: pass
-- description: Intermediate/deep crossing concept that stretches linebackers and safeties across the field.
-- beats: middle-of-field-open structures, linebackers slow to carry crossers, zone coverage with weak backside help
-- weak_against: heavy pressure, bracket treatment on the featured crosser, robbers driving underneath
+The playbook should store canonical football concepts. Coach-specific names can stay in `play_name`, and future alias or display layers can handle local terminology without weakening the shared schema.
