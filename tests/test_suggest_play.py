@@ -224,3 +224,26 @@ def test_suggest_play_defaults_pressure_id_to_none(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "Pressure context:" not in result.stdout
+
+
+def test_suggest_play_accepts_specific_coverage_id(tmp_path: Path) -> None:
+    """Specific coverage IDs should flow through the CLI and match via base coverage."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("spacing", "Spacing DBLS", "gun_1rb_2x2_spread_no_te", beats_coverage="cover3")],
+    )
+
+    result = run_suggest(
+        playbook_path,
+        "--coverage-id",
+        "cover3_buzz_field",
+        "--top-n",
+        "1",
+        "--show-reasons",
+    )
+
+    assert result.returncode == 0
+    assert "Spacing DBLS" in result.stdout
+    assert "coverage: base match cover3" in result.stdout

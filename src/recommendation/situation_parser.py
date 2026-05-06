@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import csv
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 
 from recommendation.game_state import DefenseState, GameState
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+COVERAGES_PATH = BASE_DIR / "data" / "taxonomy" / "coverages.csv"
 
 
 DOWN_MAP = {
@@ -35,19 +41,49 @@ DISTANCE_MAP = {
 OWN_TOKENS = {"own", "our", "nostre", "nostra"}
 OPP_TOKENS = {"opp", "their", "loro", "avversarie", "avversaria"}
 
-DEFENSIVE_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
-    "coverage_id": (
+def load_coverage_aliases() -> tuple[tuple[str, str], ...]:
+    """Load coverage_id and coverage_name aliases from the taxonomy."""
+    def normalize_alias_phrase(text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", text)
+        ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
+        lowered = ascii_text.lower().replace("_", " ")
+        return re.sub(r"\s+", " ", lowered).strip()
+
+    aliases: list[tuple[str, str]] = [
         ("coverage none", "none"),
         ("no coverage", "none"),
         ("soft zone", "soft_zone"),
-        ("cover 1", "cover1"),
-        ("cover 2", "cover2"),
-        ("cover 3", "cover3"),
-        ("cover 4", "cover4"),
-        ("cover1", "cover1"),
-        ("cover2", "cover2"),
-        ("cover3", "cover3"),
-        ("cover4", "cover4"),
+    ]
+    if COVERAGES_PATH.exists():
+        with COVERAGES_PATH.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                coverage_id = str(row.get("coverage_id", "")).strip()
+                coverage_name = str(row.get("coverage_name", "")).strip()
+                if coverage_id:
+                    aliases.append((coverage_id.replace("_", " "), coverage_id))
+                if coverage_name:
+                    aliases.append((coverage_name, coverage_id))
+    aliases.extend(
+        [
+            ("cover 1", "cover1"),
+            ("cover 2", "cover2"),
+            ("cover 3", "cover3"),
+            ("cover 4", "cover4"),
+        ]
+    )
+    deduped: dict[tuple[str, str], None] = {}
+    for phrase, canonical in aliases:
+        normalized_phrase = normalize_alias_phrase(phrase)
+        if normalized_phrase and canonical:
+            deduped[(normalized_phrase, canonical)] = None
+    return tuple(
+        sorted(deduped.keys(), key=lambda item: len(item[0]), reverse=True)
+    )
+
+
+DEFENSIVE_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
+    "coverage_id": (
+        *load_coverage_aliases(),
         ("match", "match"),
         ("zone", "zone"),
         ("man", "man"),

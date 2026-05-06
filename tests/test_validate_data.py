@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.validate_data import PLAYBOOK_COLUMNS, validate_data
+from scripts.validate_data import COVERAGES_COLUMNS, PLAYBOOK_COLUMNS, validate_data
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -124,10 +124,14 @@ def create_fake_repo(
 ) -> Path:
     """Create a minimal fake repo layout with valid taxonomy and data."""
     taxonomy_dir = tmp_path / "data" / "taxonomy"
+    playbook_values_dir = taxonomy_dir / "playbook_values"
+    coverage_values_dir = taxonomy_dir / "coverage_values"
     playbook_path = tmp_path / "data" / "playbook.csv"
     taxonomy_dir.mkdir(parents=True, exist_ok=True)
+    playbook_values_dir.mkdir(parents=True, exist_ok=True)
+    coverage_values_dir.mkdir(parents=True, exist_ok=True)
 
-    single_column_taxonomies = {
+    playbook_value_taxonomies = {
         "play_family.csv": ["run", "pass", "rpo"],
         "play_type.csv": ["run", "pass", "rpo"],
         "run_scheme.csv": ["power", "inside_zone"],
@@ -163,17 +167,35 @@ def create_fake_repo(
         ],
         "tags.csv": ["inside_run", "gap_scheme", "quick_game"],
     }
+    coverage_value_taxonomies = {
+        "coverage_id.csv": ["cover3"],
+        "base_coverage.csv": ["cover3"],
+        "coverage_family.csv": ["zone"],
+        "pre_snap_shell.csv": ["one_high"],
+        "post_snap_shell.csv": ["one_high"],
+        "coverage_type.csv": ["zone"],
+        "rotation_type.csv": ["none"],
+        "rotation_target.csv": ["none"],
+        "rotation_reference.csv": ["none"],
+        "strength_rule.csv": ["none"],
+        "weakness_tags.csv": ["seam", "curl_window", "flat_late"],
+    }
     for filename, values in (taxonomy_overrides or {}).items():
-        single_column_taxonomies[filename] = values
-    for filename, values in single_column_taxonomies.items():
-        write_single_column_taxonomy(taxonomy_dir / filename, values)
+        if filename in coverage_value_taxonomies:
+            coverage_value_taxonomies[filename] = values
+        else:
+            playbook_value_taxonomies[filename] = values
+    for filename, values in playbook_value_taxonomies.items():
+        write_single_column_taxonomy(playbook_values_dir / filename, values)
+    for filename, values in coverage_value_taxonomies.items():
+        write_single_column_taxonomy(coverage_values_dir / filename, values)
     write_single_column_taxonomy(
-        taxonomy_dir / "pressure.csv",
+        playbook_values_dir / "pressure.csv",
         ["none", "any_pressure", "edge_blitz", "field_blitz", "boundary_blitz", "nickel_blitz", "inside_blitz", "double_a_gap", "zero_pressure", "sim_pressure", "creeper"],
     )
 
     write_csv(
-        taxonomy_dir / "valid_run_scheme_modifier_pairs.csv",
+        playbook_values_dir / "valid_run_scheme_modifier_pairs.csv",
         ["run_scheme", "run_modifier"],
         [
             {"run_scheme": run_scheme, "run_modifier": run_modifier}
@@ -183,11 +205,28 @@ def create_fake_repo(
     write_csv(taxonomy_dir / "fronts.csv", ["front_id"], [{"front_id": "even"}])
     write_csv(
         taxonomy_dir / "coverages.csv",
-        ["coverage_id"],
-        [{"coverage_id": "cover3"}],
+        list(COVERAGES_COLUMNS),
+        [
+            {
+                "coverage_id": "cover3",
+                "coverage_name": "Cover 3",
+                "base_coverage": "cover3",
+                "coverage_family": "zone",
+                "pre_snap_shell": "one_high",
+                "post_snap_shell": "one_high",
+                "coverage_type": "zone",
+                "rotation_type": "none",
+                "rotation_target": "none",
+                "rotation_reference": "none",
+                "strength_rule": "none",
+                "weakness_tags": "seam;curl_window;flat_late",
+                "offensive_notes": "baseline",
+                "source_url": "none",
+            }
+        ],
     )
     write_csv(
-        taxonomy_dir / "defensive_personnel.csv",
+        playbook_values_dir / "defensive_personnel.csv",
         ["defensive_personnel_id"],
         [{"defensive_personnel_id": "nickel"}],
     )
@@ -458,3 +497,83 @@ def test_validate_data_cli_reports_errors_for_temp_repo(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "Data validation failed:" in result.stdout
     assert "coverage_id 'bad_coverage'" in result.stdout
+
+
+def test_real_coverages_taxonomy_keeps_specific_variants() -> None:
+    """The full coverage taxonomy should retain specific scouting variants."""
+    values = {
+        row["coverage_id"].strip()
+        for row in csv.DictReader((PROJECT_ROOT / "data" / "taxonomy" / "coverages.csv").open(newline=""))
+        if row.get("coverage_id")
+    }
+
+    assert "cover3_buzz_field" in values
+    assert "cover3_cloud_boundary" in values
+    assert "cover4_poach_trips" in values
+    assert "cover7_stubbie_trips" in values
+
+
+def test_real_coverage_id_allowlist_keeps_specific_variants() -> None:
+    """Defensive coverage_id allowlist should include specific taxonomy IDs."""
+    values = {
+        row["value"].strip()
+        for row in csv.DictReader((PROJECT_ROOT / "data" / "taxonomy" / "coverage_values" / "coverage_id.csv").open(newline=""))
+        if row.get("value")
+    }
+
+    assert "cover3_buzz_field" in values
+    assert "cover4_poach_trips" in values
+    assert "cover7_stubbie_trips" in values
+
+
+def test_real_beats_coverage_allowlist_stays_conservative() -> None:
+    """beats_coverage should stay playbook-facing, not scouting-variant-facing."""
+    values = {
+        row["value"].strip()
+        for row in csv.DictReader((PROJECT_ROOT / "data" / "taxonomy" / "playbook_values" / "beats_coverage.csv").open(newline=""))
+        if row.get("value")
+    }
+
+    assert "cover3_buzz_field" not in values
+    assert "cover4_poach_trips" not in values
+    assert "cover7_stubbie_trips" not in values
+    assert "seam" not in values
+    assert "curl_window" not in values
+    assert "flat_late" not in values
+    assert "mesh" not in values
+    assert "four_verts" not in values
+    assert "stick" not in values
+    assert "inside_run" not in values
+    assert "rb_checkdown" not in values
+
+
+def test_real_taxonomy_subdirectories_exist_without_legacy_allowed_values_dir() -> None:
+    """Allowed-value files should live under taxonomy subdirectories only."""
+    assert not (PROJECT_ROOT / "data" / "allowed_values").exists()
+    assert (PROJECT_ROOT / "data" / "taxonomy" / "playbook_values").is_dir()
+    assert (PROJECT_ROOT / "data" / "taxonomy" / "coverage_values").is_dir()
+
+
+def test_real_taxonomy_subdirectories_contain_expected_files() -> None:
+    """The repo should keep playbook and coverage allowlists in the new folders."""
+    playbook_values_dir = PROJECT_ROOT / "data" / "taxonomy" / "playbook_values"
+    coverage_values_dir = PROJECT_ROOT / "data" / "taxonomy" / "coverage_values"
+
+    for filename in [
+        "beats_coverage.csv",
+        "beats_box.csv",
+        "beats_front.csv",
+        "personnel.csv",
+        "pressure.csv",
+        "valid_run_scheme_modifier_pairs.csv",
+    ]:
+        assert (playbook_values_dir / filename).is_file()
+
+    for filename in [
+        "coverage_id.csv",
+        "base_coverage.csv",
+        "coverage_family.csv",
+        "coverage_type.csv",
+        "weakness_tags.csv",
+    ]:
+        assert (coverage_values_dir / filename).is_file()

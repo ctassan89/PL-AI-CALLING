@@ -10,6 +10,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 TAXONOMY_DIR = DATA_DIR / "taxonomy"
+PLAYBOOK_VALUES_DIR = TAXONOMY_DIR / "playbook_values"
+COVERAGE_VALUES_DIR = TAXONOMY_DIR / "coverage_values"
 PLAYBOOK_PATH = DATA_DIR / "playbook.csv"
 OPPONENT_TENDENCIES_PATH = DATA_DIR / "opponent_tendencies.csv"
 FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "formations.csv"
@@ -50,26 +52,26 @@ PLAYBOOK_COLUMNS = [
 ]
 
 SINGLE_VALUE_TAXONOMIES = {
-    "play_family": "play_family.csv",
-    "play_type": "play_type.csv",
-    "run_scheme": "run_scheme.csv",
-    "run_modifier": "run_modifier.csv",
-    "pass_concept": "pass_concept.csv",
-    "pass_modifier": "pass_modifier.csv",
-    "protection": "protection.csv",
-    "rpo_tag": "rpo_tag.csv",
-    "play_action": "play_action.csv",
-    "personnel": "personnel.csv",
+    "play_family": "taxonomy/playbook_values/play_family.csv",
+    "play_type": "taxonomy/playbook_values/play_type.csv",
+    "run_scheme": "taxonomy/playbook_values/run_scheme.csv",
+    "run_modifier": "taxonomy/playbook_values/run_modifier.csv",
+    "pass_concept": "taxonomy/playbook_values/pass_concept.csv",
+    "pass_modifier": "taxonomy/playbook_values/pass_modifier.csv",
+    "protection": "taxonomy/playbook_values/protection.csv",
+    "rpo_tag": "taxonomy/playbook_values/rpo_tag.csv",
+    "play_action": "taxonomy/playbook_values/play_action.csv",
+    "personnel": "taxonomy/playbook_values/personnel.csv",
 }
 
 MULTI_VALUE_TAXONOMIES = {
-    "beats_front": "beats_front.csv",
-    "beats_coverage": "beats_coverage.csv",
-    "beats_pressure": "pressure.csv",
-    "beats_box": "beats_box.csv",
-    "preferred_down_distance": "preferred_down_distance.csv",
-    "preferred_field_zone": "preferred_field_zone.csv",
-    "tags": "tags.csv",
+    "beats_front": "taxonomy/playbook_values/beats_front.csv",
+    "beats_coverage": "taxonomy/playbook_values/beats_coverage.csv",
+    "beats_pressure": "taxonomy/playbook_values/pressure.csv",
+    "beats_box": "taxonomy/playbook_values/beats_box.csv",
+    "preferred_down_distance": "taxonomy/playbook_values/preferred_down_distance.csv",
+    "preferred_field_zone": "taxonomy/playbook_values/preferred_field_zone.csv",
+    "tags": "taxonomy/playbook_values/tags.csv",
 }
 
 REQUIRED_DEFENSIVE_TENDENCY_COLUMNS = {
@@ -99,6 +101,40 @@ FORMATION_TAXONOMY_REQUIRED_COLUMNS = {
     "formation_name",
 }
 
+COVERAGES_COLUMNS = [
+    "coverage_id",
+    "coverage_name",
+    "base_coverage",
+    "coverage_family",
+    "pre_snap_shell",
+    "post_snap_shell",
+    "coverage_type",
+    "rotation_type",
+    "rotation_target",
+    "rotation_reference",
+    "strength_rule",
+    "weakness_tags",
+    "offensive_notes",
+    "source_url",
+]
+
+SINGLE_VALUE_COVERAGE_TAXONOMIES = {
+    "base_coverage": "taxonomy/coverage_values/base_coverage.csv",
+    "coverage_family": "taxonomy/coverage_values/coverage_family.csv",
+    "pre_snap_shell": "taxonomy/coverage_values/pre_snap_shell.csv",
+    "post_snap_shell": "taxonomy/coverage_values/post_snap_shell.csv",
+    "coverage_type": "taxonomy/coverage_values/coverage_type.csv",
+    "rotation_type": "taxonomy/coverage_values/rotation_type.csv",
+    "rotation_target": "taxonomy/coverage_values/rotation_target.csv",
+    "rotation_reference": "taxonomy/coverage_values/rotation_reference.csv",
+    "strength_rule": "taxonomy/coverage_values/strength_rule.csv",
+}
+
+
+def normalize_token(value: str) -> str:
+    """Normalize flat taxonomy tokens for case-insensitive validation."""
+    return value.strip().lower()
+
 
 def format_relative_path(path: Path, base_dir: Path) -> str:
     """Format a path relative to the validation base directory when possible."""
@@ -119,6 +155,11 @@ def load_csv_columns(path: Path) -> list[str]:
     with path.open(newline="") as handle:
         reader = csv.reader(handle)
         return next(reader, [])
+
+
+def split_semicolon_values(value: str) -> list[str]:
+    """Split a semicolon-separated field into stripped values."""
+    return [token.strip() for token in value.split(";") if token.strip()]
 
 
 def require_columns(
@@ -193,20 +234,130 @@ def load_single_column_taxonomy(
     return values
 
 
-def taxonomy_source_path(
-    data_dir: Path,
-    taxonomy_dir: Path,
-    source: str,
-) -> Path:
-    """Resolve a taxonomy source path from data/taxonomy or a relative data path."""
-    if "/" in source:
-        return data_dir / source
-    return taxonomy_dir / source
+def taxonomy_source_path(data_dir: Path, source: str) -> Path:
+    """Resolve a taxonomy source path relative to data/."""
+    return data_dir / source
 
 
 def load_id_set(path: Path, id_column: str) -> set[str]:
     """Load an ID column from a taxonomy CSV."""
     return {get_row_value(row, id_column) for row in load_csv_rows(path) if get_row_value(row, id_column)}
+
+
+def add_duplicate_id_errors(
+    errors: list[str],
+    rows: list[dict[str, str]],
+    id_column: str,
+    dataset_label: str,
+) -> None:
+    """Ensure an ID column remains unique."""
+    seen: dict[str, int] = {}
+    for index, row in enumerate(rows, start=2):
+        value = get_row_value(row, id_column)
+        if not value:
+            errors.append(f"{dataset_label} row {index}: {id_column} is blank.")
+            continue
+        if value in seen:
+            errors.append(
+                f"{dataset_label} row {index}: duplicate {id_column} '{value}' first seen at row {seen[value]}."
+            )
+            continue
+        seen[value] = index
+
+
+def validate_coverages_taxonomy(
+    coverages_path: Path,
+    errors: list[str],
+    base_dir: Path,
+) -> tuple[set[str], set[str]]:
+    """Validate the upgraded coverage taxonomy and return IDs plus weakness tags."""
+    columns = require_columns(coverages_path, errors, base_dir)
+    if not columns:
+        return set(), set()
+    add_exact_column_order_error(
+        errors,
+        columns,
+        COVERAGES_COLUMNS,
+        "data/taxonomy/coverages.csv",
+    )
+    if columns != COVERAGES_COLUMNS:
+        return set(), set()
+
+    rows = load_csv_rows(coverages_path)
+    add_duplicate_id_errors(errors, rows, "coverage_id", "coverages.csv")
+
+    coverage_taxonomy_values = {
+        column_name: load_single_column_taxonomy(base_dir / "data" / relative_path, errors, base_dir)
+        for column_name, relative_path in SINGLE_VALUE_COVERAGE_TAXONOMIES.items()
+    }
+
+    allowed_weakness_tags_path = (
+        base_dir / "data" / "taxonomy" / "coverage_values" / "weakness_tags.csv"
+    )
+    allowed_weakness_tags = load_single_column_taxonomy(
+        allowed_weakness_tags_path,
+        errors,
+        base_dir,
+    )
+    normalized_weakness_tags = {
+        normalize_token(value) for value in allowed_weakness_tags if normalize_token(value)
+    }
+
+    coverage_ids: set[str] = set()
+    discovered_weakness_tags: set[str] = set()
+    for index, row in enumerate(rows, start=2):
+        coverage_id = get_row_value(row, "coverage_id")
+        if coverage_id:
+            coverage_ids.add(coverage_id)
+
+        for column_name, allowed_values in coverage_taxonomy_values.items():
+            value = get_row_value(row, column_name)
+            if not value:
+                errors.append(f"coverages.csv row {index} ({coverage_id}): {column_name} is blank.")
+                continue
+            if value not in allowed_values:
+                errors.append(
+                    f"coverages.csv row {index} ({coverage_id}): invalid {column_name} '{value}'."
+                )
+
+        weakness_tags = get_row_value(row, "weakness_tags")
+        if not weakness_tags:
+            continue
+        tokens = [token.strip() for token in weakness_tags.split(";")]
+        invalid_tokens = [
+            token
+            for token in tokens
+            if not token or normalize_token(token) not in normalized_weakness_tags
+        ]
+        if invalid_tokens:
+            formatted = ", ".join(repr(token) for token in invalid_tokens)
+            errors.append(
+                f"coverages.csv row {index} ({coverage_id}): invalid weakness_tags token(s): {formatted}."
+            )
+        discovered_weakness_tags.update(normalize_token(token) for token in tokens if token)
+
+    allowed_coverage_ids_path = (
+        base_dir / "data" / "taxonomy" / "coverage_values" / "coverage_id.csv"
+    )
+    allowed_coverage_ids = load_single_column_taxonomy(
+        allowed_coverage_ids_path,
+        errors,
+        base_dir,
+    )
+    missing_coverage_ids = sorted(coverage_ids - allowed_coverage_ids)
+    extra_coverage_ids = sorted(allowed_coverage_ids - coverage_ids)
+    if missing_coverage_ids:
+        errors.append(
+            "data/taxonomy/coverage_values/coverage_id.csv is missing coverage_id value(s): "
+            + ", ".join(missing_coverage_ids)
+        )
+    if extra_coverage_ids:
+        errors.append(
+            "data/taxonomy/coverage_values/coverage_id.csv contains value(s) not present in data/taxonomy/coverages.csv: "
+            + ", ".join(extra_coverage_ids)
+        )
+
+    return coverage_ids, discovered_weakness_tags
 
 
 def load_formation_personnel_map(
@@ -411,11 +562,21 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
     base_dir = Path(base_dir) if base_dir is not None else BASE_DIR
     data_dir = base_dir / "data"
     taxonomy_dir = data_dir / "taxonomy"
+    playbook_values_dir = taxonomy_dir / "playbook_values"
+    coverage_values_dir = taxonomy_dir / "coverage_values"
     playbook_path = data_dir / "playbook.csv"
     opponent_tendencies_path = data_dir / "opponent_tendencies.csv"
     formation_taxonomy_path = taxonomy_dir / "formations.csv"
+    coverages_path = taxonomy_dir / "coverages.csv"
 
     errors: list[str] = []
+
+    if (data_dir / "allowed_values").exists():
+        errors.append("data/allowed_values is no longer supported; move value lists under data/taxonomy/.")
+
+    for required_dir in [playbook_values_dir, coverage_values_dir]:
+        if not required_dir.exists():
+            errors.append(f"Missing taxonomy directory: {format_relative_path(required_dir, base_dir)}")
 
     opponent_tendency_columns = (
         load_csv_columns(opponent_tendencies_path)
@@ -440,7 +601,7 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
 
     taxonomy_values = {
         column_name: load_single_column_taxonomy(
-            taxonomy_source_path(data_dir, taxonomy_dir, filename),
+            taxonomy_source_path(data_dir, filename),
             errors,
             base_dir,
         )
@@ -450,7 +611,9 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
         }.items()
     }
 
-    valid_run_pair_path = taxonomy_dir / "valid_run_scheme_modifier_pairs.csv"
+    coverage_ids, _ = validate_coverages_taxonomy(coverages_path, errors, base_dir)
+
+    valid_run_pair_path = playbook_values_dir / "valid_run_scheme_modifier_pairs.csv"
     valid_run_pairs: set[tuple[str, str]] = set()
     if not valid_run_pair_path.exists():
         errors.append(
@@ -458,7 +621,7 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
         )
     elif load_csv_columns(valid_run_pair_path) != ["run_scheme", "run_modifier"]:
         errors.append(
-            "data/taxonomy/valid_run_scheme_modifier_pairs.csv must contain exactly "
+            "data/taxonomy/playbook_values/valid_run_scheme_modifier_pairs.csv must contain exactly "
             "the columns run_scheme,run_modifier."
         )
     else:
@@ -494,9 +657,8 @@ def validate_data(base_dir: Path | None = None) -> list[str]:
     playbook = load_csv_rows(playbook_path)
 
     front_ids = load_id_set(taxonomy_dir / "fronts.csv", "front_id")
-    coverage_ids = load_id_set(taxonomy_dir / "coverages.csv", "coverage_id")
     defensive_personnel_ids = load_id_set(
-        taxonomy_dir / "defensive_personnel.csv",
+        playbook_values_dir / "defensive_personnel.csv",
         "defensive_personnel_id",
     )
     formation_ids = load_id_set(formation_taxonomy_path, "formation_id")

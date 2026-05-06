@@ -171,6 +171,26 @@ class RecommendationEngineTests(unittest.TestCase):
         )
         self.assertEqual(ids(recommendations)[:2], ["exact", "family"])
 
+    def test_specific_coverage_input_matches_base_coverage(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="base", beats_coverage="cover3"),
+                make_play(play_id="family", beats_coverage="zone"),
+            ],
+            coverage_id="cover3_buzz_field",
+        )
+
+        base = next(play for play in recommendations if play["play_id"] == "base")
+        self.assertEqual(ids(recommendations)[:2], ["base", "family"])
+        self.assertTrue(any("coverage: base match cover3" in reason for reason in base["reasons"]))
+
+    def test_specific_coverage_input_family_match_scores_below_base_match(self) -> None:
+        base = self.score(make_play(play_id="base", beats_coverage="cover3"), coverage_id="cover3_buzz_field")
+        family = self.score(make_play(play_id="family", beats_coverage="zone"), coverage_id="cover3_buzz_field")
+
+        self.assertGreater(float(base["score"]), float(family["score"]))
+        self.assertTrue(any("coverage: family match zone" in reason for reason in family["reasons"]))
+
     def test_cover3_boosts_flood_or_curl_flat(self) -> None:
         recommendations = self.recommend(
             [
@@ -726,7 +746,7 @@ class RecommendationEngineTests(unittest.TestCase):
         generic = next(play for play in recommendations if play["play_id"] == "generic")
         self.assertEqual(ids(recommendations)[:2], ["generic", "specific"])
         self.assertFalse(any("coverage: family match" in reason for reason in specific["reasons"]))
-        self.assertTrue(any("coverage: family match via zone" in reason for reason in generic["reasons"]))
+        self.assertTrue(any("coverage: family match zone" in reason for reason in generic["reasons"]))
 
     def test_four_verts_does_not_get_cover4_bonus_without_cover4_tag(self) -> None:
         recommendations = self.recommend(
@@ -819,7 +839,7 @@ class RecommendationEngineTests(unittest.TestCase):
         )
         specific = next(play for play in recommendations if play["play_id"] == "specific")
         zone = next(play for play in recommendations if play["play_id"] == "zone")
-        self.assertTrue(any("coverage: family match via zone" in reason for reason in zone["reasons"]))
+        self.assertTrue(any("coverage: family match zone" in reason for reason in zone["reasons"]))
         self.assertFalse(any("coverage: family match" in reason for reason in specific["reasons"]))
 
     def test_top_n_prefers_unique_concepts_before_duplicates(self) -> None:

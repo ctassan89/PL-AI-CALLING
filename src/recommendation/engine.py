@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 from collections import Counter
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, TypedDict
 
 import pandas as pd
@@ -54,19 +56,9 @@ RELATED_ZONES = {
     "open_field": set(),
 }
 
-COVERAGE_FAMILY = {
-    "cover0": {"man"},
-    "cover1": {"man"},
-    "cover2": {"zone"},
-    "cover3": {"zone"},
-    "cover4": {"zone", "match"},
-    "cover4_quarters": {"zone", "match"},
-    "soft_zone": {"zone"},
-    "match": {"match"},
-    "man": {"man"},
-    "zone": {"zone"},
-}
-GENERIC_COVERAGE_VALUES = {"zone", "man", "match", "soft_zone"}
+BASE_DIR = Path(__file__).resolve().parents[2]
+COVERAGES_PATH = BASE_DIR / "data" / "taxonomy" / "coverages.csv"
+GENERIC_COVERAGE_VALUES = {"zone", "man", "match", "soft_zone", "hybrid"}
 
 RELATED_BOXES = {
     "light_box": {"normal_box"},
@@ -122,6 +114,30 @@ PASS_ORIENTED_LONG_RPO_TAGS = {"glance", "double_slant", "stick", "go_out", "sla
 RUN_FIRST_LONG_RPO_TAGS = {"bubble", "now", "hitch"}
 SECOND_SHORT_SHOT_CONCEPTS = {"four_verts", "yankee", "mills"}
 SECOND_SHORT_SAFE_CONCEPTS = {"hitch", "stick", "mesh", "beamer"}
+
+
+def load_coverage_taxonomy() -> dict[str, dict[str, str]]:
+    """Load the unified coverage taxonomy keyed by coverage_id."""
+    def normalize_taxonomy_value(value: object) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip().lower()
+        return "" if text == "nan" else text
+
+    if not COVERAGES_PATH.exists():
+        return {}
+    with COVERAGES_PATH.open(newline="") as handle:
+        return {
+            normalize_taxonomy_value(row.get("coverage_id", "")): {
+                str(key): normalize_taxonomy_value(value)
+                for key, value in row.items()
+            }
+            for row in csv.DictReader(handle)
+            if normalize_taxonomy_value(row.get("coverage_id", ""))
+        }
+
+
+COVERAGE_TAXONOMY = load_coverage_taxonomy()
 
 
 def normalize_text(value: object) -> str:
@@ -283,8 +299,9 @@ def build_situation(
     if front_id is not None:
         situation["front_id"] = normalize_text(front_id)
     if coverage_id is not None:
-        situation["coverage_id"] = normalize_text(coverage_id)
-        families = sorted(COVERAGE_FAMILY.get(normalize_text(coverage_id), set()))
+        normalized_coverage = normalize_text(coverage_id)
+        situation["coverage_id"] = normalized_coverage
+        families = sorted(coverage_family_aliases(normalized_coverage))
         if families:
             situation["coverage_family"] = ";".join(families)
     situation["pressure_id"] = normalize_text(pressure_id) if pressure_id is not None else "none"
@@ -438,6 +455,71 @@ def normalize_preferred_field_zones(play: pd.Series) -> set[str]:
             continue
         normalized.add(normalize_field_zone(value))
     return normalized
+
+
+def coverage_details(value: object) -> dict[str, str]:
+    """Return normalized coverage metadata for a value when available."""
+    key = normalize_text(value)
+    return COVERAGE_TAXONOMY.get(key, {})
+
+
+def coverage_base(value: object) -> str:
+    """Return the base coverage for a value, falling back to the value itself."""
+    key = normalize_text(value)
+    details = coverage_details(key)
+    base_value = details.get("base_coverage", "")
+    if base_value:
+        return base_value
+    return key
+
+
+def coverage_weakness_tags(value: object) -> set[str]:
+    """Return weakness tags for a coverage value."""
+    details = coverage_details(value)
+    return set(parse_list(details.get("weakness_tags", "")))
+
+
+def coverage_family_aliases(value: object) -> set[str]:
+    """Return compatible generic family labels for a coverage value."""
+    key = normalize_text(value)
+    if not key:
+        return set()
+
+    details = coverage_details(key)
+    base_value = details.get("base_coverage", key)
+    family = details.get("coverage_family", "")
+    coverage_type = details.get("coverage_type", "")
+    aliases: set[str] = set()
+
+    if family in GENERIC_COVERAGE_VALUES:
+        aliases.add(family)
+    if key in GENERIC_COVERAGE_VALUES:
+        aliases.add(key)
+
+    if family == "man" or base_value in {"cover0", "cover1"} or coverage_type.startswith("man"):
+        aliases.add("man")
+    if family == "soft_zone" or key == "soft_zone" or base_value == "soft_zone":
+        aliases.update({"soft_zone", "zone"})
+    if family in {"zone", "hybrid"} or coverage_type in {
+        "zone",
+        "spot_drop",
+        "spot_drop_tampa",
+        "trap",
+        "cloud",
+        "buzz",
+        "invert",
+        "quarters",
+        "quarter_quarter_half",
+        "half_quarter_quarter",
+    }:
+        aliases.add("zone")
+    if family in {"match", "hybrid"} or base_value in {"cover4", "cover6", "cover7", "cover8"}:
+        aliases.add("match")
+    if family == "hybrid" or key == "hybrid" or base_value in {"cover6", "cover8"}:
+        aliases.add("hybrid")
+    if base_value == "cover4":
+        aliases.add("zone")
+    return aliases
 
 
 def normalize_beats_box(play: pd.Series) -> set[str]:
@@ -616,7 +698,7 @@ def score_field_zone(play: pd.Series, situation: Situation) -> tuple[float, list
 
 def coverage_families(value: str) -> set[str]:
     """Return normalized coverage families for a label."""
-    return set(COVERAGE_FAMILY.get(value, set()))
+    return coverage_family_aliases(value)
 
 
 def coverage_match_kind(play: pd.Series, situation: Situation) -> tuple[str, str]:
@@ -628,18 +710,22 @@ def coverage_match_kind(play: pd.Series, situation: Situation) -> tuple[str, str
     coverage_values = normalize_beats_coverage(play)
     if coverage_id in coverage_values:
         return "exact", coverage_id
-    if "any" in coverage_values:
-        return "any", "any"
 
-    situation_families = coverage_families(coverage_id)
+    base_value = coverage_base(coverage_id)
+    if base_value and base_value != coverage_id and base_value in coverage_values:
+        return "base", base_value
+
+    situation_families = coverage_family_aliases(coverage_id)
     generic_matches = sorted(
         value
         for value in coverage_values
         if value in GENERIC_COVERAGE_VALUES
-        and (value in situation_families or coverage_families(value) & situation_families)
+        and value in situation_families
     )
     if generic_matches:
         return "family", generic_matches[0]
+    if "any" in coverage_values:
+        return "any", "any"
     return "none", ""
 
 
@@ -647,20 +733,34 @@ def supports_specific_coverage(play: pd.Series, coverage_id: str) -> bool:
     """Return whether the play explicitly supports the specific coverage."""
     if not coverage_id:
         return False
-    coverage_values = normalize_beats_coverage(play)
-    return coverage_id in coverage_values or "any" in coverage_values
+    match_kind, _ = coverage_match_kind(
+        play,
+        {"coverage_id": coverage_id},
+    )
+    return match_kind in {"exact", "base"}
 
 
 def coverage_score_value(play: pd.Series, situation: Situation) -> float:
     """Return the numeric coverage structure score for gating tactical bonuses."""
     match_kind, _ = coverage_match_kind(play, situation)
     if match_kind == "exact":
-        return 7.0
+        return 9.0
+    if match_kind == "base":
+        return 6.0
     if match_kind == "family":
-        return 4.0
+        return 3.0
     if match_kind == "any":
         return 2.0
     return 0.0
+
+
+def matched_coverage_weaknesses(play: pd.Series, coverage_id: str) -> list[str]:
+    """Return weakness tags directly attacked by a play's normalized tags."""
+    if not coverage_id:
+        return []
+    play_tags = infer_play_tags(play)
+    matches = sorted(coverage_weakness_tags(coverage_id) & play_tags)
+    return matches[:2]
 
 
 def concept_group_key(play: pd.Series) -> str:
@@ -726,12 +826,17 @@ def score_defensive_structure(play: pd.Series, situation: Situation) -> tuple[fl
     if coverage_id:
         match_kind, match_label = coverage_match_kind(play, situation)
         if match_kind == "exact":
-            score += add_reason(reasons, 7.0, f"coverage: exact {coverage_id} match")
+            if coverage_id == coverage_base(coverage_id):
+                score += add_reason(reasons, 9.0, f"coverage: exact match {coverage_id}")
+            else:
+                score += add_reason(reasons, 9.0, f"coverage: exact specific match {coverage_id}")
+        elif match_kind == "base":
+            score += add_reason(reasons, 6.0, f"coverage: base match {match_label}")
         elif match_kind == "family":
             score += add_reason(
                 reasons,
-                4.0,
-                f"coverage: family match via {match_label}",
+                3.0,
+                f"coverage: family match {match_label}",
             )
         elif match_kind == "any":
             score += add_reason(reasons, 2.0, "coverage: any coverage answer")
@@ -796,6 +901,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
     field_zone = str(situation["field_zone"])
     down_distance_tag = str(situation["down_distance_tag"])
     coverage_id = normalize_text(situation.get("coverage_id"))
+    coverage_base_id = coverage_base(coverage_id)
     box_label = normalize_text(situation.get("box_label"))
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
     run_scheme = normalize_text(play_series_value(play, "run_scheme"))
@@ -978,7 +1084,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if distance >= 8 and ("draw" in tags or "screen" in tags or "perimeter_run" in tags or "explosive" in tags or "perimeter_answer" in tags):
             score += add_reason(reasons, 2.0, "tactical: light_box still helps a perimeter or draw answer in long yardage")
 
-    if coverage_id == "cover3":
+    if coverage_base_id == "cover3":
         if pass_concept == "flood" or "flood" in tags:
             score += add_reason(reasons, 3.0, "tactical: flood is strong versus cover3")
         if pass_concept == "curl_flat" or "curl_flat" in tags:
@@ -990,7 +1096,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if four_verts and has_specific_coverage_support and (is_long_context or int(situation["down"]) == 1 or play_action):
             score += add_reason(reasons, 2.0, "tactical: four_verts has contextual cover3 value here")
 
-    if coverage_id == "cover4" and (is_second_long or is_third_long or is_fourth_long or distance >= 8):
+    if coverage_base_id == "cover4" and (is_second_long or is_third_long or is_fourth_long or distance >= 8):
         if pass_concept in {"seams", "y_cross", "flood", "curl_flat"} and (
             has_specific_coverage_support or "cover4_beater" in tags
         ):
@@ -1002,7 +1108,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 3.0, "tactical: seams profile helps versus cover4")
 
     coverage_fams = coverage_families(coverage_id)
-    if "man" in coverage_fams or coverage_id in {"cover0", "cover1", "man"}:
+    if "man" in coverage_fams or coverage_base_id in {"cover0", "cover1", "man"}:
         if pass_concept == "mesh" or "mesh" in tags:
             score += add_reason(reasons, 4.0, "tactical: mesh is strong versus man")
         if "rub" in tags:
@@ -1015,7 +1121,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if "quick_game" in tags:
             score += add_reason(reasons, 3.0, "tactical: quick_game is useful versus man")
 
-    if "zone" in coverage_fams or coverage_id in {"cover2", "cover3", "soft_zone", "zone"}:
+    if "zone" in coverage_fams or coverage_base_id in {"cover2", "cover3", "soft_zone", "zone"}:
         if (
             {"spacing", "curl_flat", "flood", "snag", "seams"} & tags
             or pass_concept in CONVERSION_ZONE_CONCEPTS
@@ -1028,7 +1134,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         if pass_concept == "snag" or "snag" in tags:
             score += add_reason(reasons, 3.0, "tactical: snag fits zone coverage")
 
-    if coverage_id == "cover0":
+    if coverage_base_id == "cover0":
         if "quick_game" in tags:
             score += add_reason(reasons, 5.0, "tactical: quick_game is critical versus cover0")
         if "man_beater" in tags:
@@ -1037,6 +1143,9 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 4.0, "tactical: screen can punish cover0 pressure")
         if "slow_developing" in tags:
             score += add_reason(reasons, -8.0, "tactical: slow_developing concept is dangerous versus cover0")
+
+    for weakness_tag in matched_coverage_weaknesses(play, coverage_id):
+        score += add_reason(reasons, 1.0, f"tactical: attacks coverage weakness {weakness_tag}")
 
     return clamp(score, -10.0, 15.0), reasons
 

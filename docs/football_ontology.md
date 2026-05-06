@@ -29,21 +29,52 @@ This document describes the structured football schema used by PL-AI-CALLING. Th
 
 ## Coverage Ontology
 
-`beats_coverage` is only for coverage answers. Pressure is modeled separately.
+The repo keeps two different coverage layers on purpose:
 
-Supported values in the repo and engine:
+- `data/taxonomy/coverages.csv` is the full defensive taxonomy. It includes base rows such as `cover3`, generic families such as `zone`, and specific scouting IDs such as `cover3_buzz_field`, `cover4_poach_trips`, and `cover7_stubbie_trips`.
+- `data/playbook.csv -> beats_coverage` is the playbook-facing answer field. It should stay mostly generic so coaches tag what the play structurally answers, not every possible scouting variant.
+- `data/taxonomy/coverage_values/coverage_id.csv` is the allowed input list for defensive `coverage_id` values and should contain every `coverage_id` from `coverages.csv`.
+
+`beats_coverage` is only for coverage answers. Pressure is modeled separately in `beats_pressure`.
+
+Current playbook-facing `beats_coverage` values:
 
 - `none`
-- `zone`
-- `man`
+- `any`
+- `cover0`
 - `cover1`
 - `cover2`
 - `cover3`
 - `cover4`
+- `cover6`
+- `cover7`
+- `cover8`
+- `man`
+- `zone`
 - `match`
 - `soft_zone`
+- `hybrid`
+- `pressure`
 
 Use coverage values when the play is designed to answer structure, leverage, or rotation rules in coverage.
+
+Example:
+
+- `data/taxonomy/coverages.csv`: `cover3_buzz_field` with `base_coverage=cover3` and `coverage_family=zone`
+- `data/playbook.csv`: `beats_coverage=cover3`
+- CLI or scouting input: `coverage_id=cover3_buzz_field`
+
+The engine first looks for an exact specific match, then falls back to `base_coverage`, then to `coverage_family`. That means `cover3_buzz_field` correctly matches a play tagged with `cover3`, and a play tagged only with `zone` still gets a weaker family match.
+
+## Taxonomy Layout
+
+The repo organizes football data in four layers:
+
+- `data/playbook.csv`: offensive playbook data
+- `data/opponent_tendencies.csv`: optional defensive tendency input data
+- `data/taxonomy/coverages.csv`: full defensive coverage taxonomy
+- `data/taxonomy/playbook_values/`: allowed-value files for playbook columns such as `beats_coverage`, `beats_front`, `personnel`, `play_action`, and `tags`
+- `data/taxonomy/coverage_values/`: allowed-value files for coverage-taxonomy columns such as `coverage_id`, `base_coverage`, `coverage_family`, `coverage_type`, `rotation_type`, and `weakness_tags`
 
 ## Pressure Ontology
 

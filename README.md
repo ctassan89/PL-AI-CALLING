@@ -40,7 +40,7 @@ python3 scripts/suggest_play.py \
   --distance 6 \
   --field-zone open_field \
   --front-id even \
-  --coverage-id cover1 \
+  --coverage-id cover3_buzz_field \
   --pressure-id nickel_blitz \
   --box-count 6 \
   --personnel 11 \
@@ -49,6 +49,13 @@ python3 scripts/suggest_play.py \
 ```
 
 The standard suggester builds a normalized situation with `build_situation(...)` and ranks plays through `recommend_plays(...)`.
+
+Coverage handling stays intentionally split:
+
+- `data/taxonomy/coverages.csv` is the full defensive coverage taxonomy, including specific variants like `cover3_buzz_field` and `cover7_stubbie_trips`.
+- `beats_coverage` in `data/playbook.csv` is the playbook-facing answer list and should stay mostly generic, such as `cover3`, `zone`, or `match`.
+- `data/taxonomy/coverage_values/coverage_id.csv` is the allowed input list for defensive `coverage_id` values.
+- The engine maps `coverage_id -> base_coverage -> coverage_family`, so a play tagged with `beats_coverage=cover3` can still match an input of `cover3_buzz_field`.
 
 ## Sequential Session
 
@@ -81,9 +88,10 @@ Session behavior:
 ## Data Files
 
 - `data/playbook.csv`: structured offensive inventory used for recommendations
-- `data/taxonomy/*`: canonical values for playbook validation and football dimensions
 - `data/opponent_tendencies.csv`: optional opponent lookup table for tendency adjustments
-- `data/allowed_values/*`: legacy path not used by the current validator or recommendation flow
+- `data/taxonomy/coverages.csv`: full defensive coverage taxonomy, including specific variants
+- `data/taxonomy/playbook_values/*`: playbook-facing allowed values used to validate `data/playbook.csv`
+- `data/taxonomy/coverage_values/*`: allowed values used to validate columns inside `data/taxonomy/coverages.csv`
 
 ## Repository Layout
 

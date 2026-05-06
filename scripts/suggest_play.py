@@ -14,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 PLAYBOOK_PATH = BASE_DIR / "data" / "playbook.csv"
 DEFAULT_TENDENCIES_PATH = BASE_DIR / "data" / "opponent_tendencies.csv"
 FORMATION_TAXONOMY_PATH = BASE_DIR / "data" / "taxonomy" / "formations.csv"
-PRESSURE_TAXONOMY_PATH = BASE_DIR / "data" / "taxonomy" / "pressure.csv"
+PRESSURE_TAXONOMY_PATH = BASE_DIR / "data" / "taxonomy" / "playbook_values" / "pressure.csv"
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
