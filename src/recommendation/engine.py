@@ -58,6 +58,7 @@ RELATED_ZONES = {
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 COVERAGES_PATH = BASE_DIR / "data" / "taxonomy" / "coverages.csv"
+FORMATIONS_PATH = BASE_DIR / "data" / "taxonomy" / "formations.csv"
 GENERIC_COVERAGE_VALUES = {"zone", "man", "match", "soft_zone", "hybrid"}
 
 RELATED_BOXES = {
@@ -138,6 +139,30 @@ def load_coverage_taxonomy() -> dict[str, dict[str, str]]:
 
 
 COVERAGE_TAXONOMY = load_coverage_taxonomy()
+
+
+def load_formation_taxonomy() -> dict[str, dict[str, str]]:
+    """Load the formation taxonomy keyed by formation_id."""
+    def normalize_taxonomy_value(value: object) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip().lower()
+        return "" if text == "nan" else text
+
+    if not FORMATIONS_PATH.exists():
+        return {}
+    with FORMATIONS_PATH.open(newline="") as handle:
+        return {
+            normalize_taxonomy_value(row.get("formation_id", "")): {
+                str(key): normalize_taxonomy_value(value)
+                for key, value in row.items()
+            }
+            for row in csv.DictReader(handle)
+            if normalize_taxonomy_value(row.get("formation_id", ""))
+        }
+
+
+FORMATION_TAXONOMY = load_formation_taxonomy()
 
 
 def normalize_text(value: object) -> str:
@@ -763,27 +788,71 @@ def matched_coverage_weaknesses(play: pd.Series, coverage_id: str) -> list[str]:
     return matches[:2]
 
 
+def normalize_concept_modifier(value: object) -> str:
+    """Normalize modifiers for concept grouping."""
+    modifier = normalize_text(value)
+    if modifier in {"", "none", "base"}:
+        return ""
+    return modifier
+
+
+def formation_similarity_key(play: pd.Series) -> str:
+    """Return a compact key for formations that feel tactically similar."""
+    formation_id = normalize_text(play_series_value(play, "formation_id"))
+    personnel = normalize_text(play_series_value(play, "personnel"))
+    details = FORMATION_TAXONOMY.get(formation_id, {})
+    formation_family = details.get("formation_family", "")
+    receiver_structure = details.get("receiver_structure", "")
+    spacing_tag = details.get("spacing_tag", "")
+    return ":".join(
+        value
+        for value in [personnel, formation_family, receiver_structure, spacing_tag]
+        if value
+    )
+
+
 def concept_group_key(play: pd.Series) -> str:
     """Return the grouping key used for concept diversity reranking."""
     play_type = normalize_text(play_series_value(play, "play_type"))
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    pass_modifier = normalize_concept_modifier(play_series_value(play, "pass_modifier"))
     run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    run_modifier = normalize_concept_modifier(play_series_value(play, "run_modifier"))
     rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
-    play_action = normalize_text(play_series_value(play, "play_action")) == "true"
 
-    if play_type == "pass":
-        if play_action:
-            return f"play_action:{pass_concept}:true"
-        return f"pass:{pass_concept}"
+    if play_type in {"pass", "screen"}:
+        return f"pass:{pass_concept}:{pass_modifier}"
     if play_type == "run":
-        return f"run:{run_scheme}"
+        return f"run:{run_scheme}:{run_modifier}"
     if play_type == "rpo":
-        if rpo_tag and rpo_tag != "none":
-            return f"rpo:{run_scheme}:{rpo_tag}"
-        if pass_concept and pass_concept != "none":
-            return f"rpo:{run_scheme}:{pass_concept}"
-        return f"rpo:{run_scheme}"
+        target = pass_concept if pass_concept and pass_concept != "none" else rpo_tag
+        return f"rpo:{target}:{pass_modifier}"
     return f"{play_type}:{pass_concept or run_scheme}"
+
+
+def concept_variant_key(play: pd.Series) -> str:
+    """Return a variant-aware concept key that keeps play-action separate."""
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    variant = concept_group_key(play)
+    if play_type not in {"pass", "rpo", "screen"}:
+        return variant
+    play_action = normalize_text(play_series_value(play, "play_action")) == "true"
+    return f"{variant}:pa={str(play_action).lower()}"
+
+
+def is_screen_play(play: pd.Series, tags: set[str] | None = None) -> bool:
+    """Return whether the play should be treated as a screen."""
+    if tags is None:
+        tags = infer_play_tags(play)
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    pass_modifier = normalize_text(play_series_value(play, "pass_modifier"))
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    return bool(
+        "screen" in tags
+        or play_type == "screen"
+        or pass_concept in SCREEN_CONCEPTS
+        or "screen" in pass_modifier
+    )
 
 
 def concept_scheme_label(play: pd.Series) -> str:
@@ -924,18 +993,54 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
     is_fourth_long = down_distance_tag == "fourth_long"
     is_long_context = down_distance_tag in {"second_long", "third_long", "fourth_long"} or distance >= 7
     play_type = normalize_text(play_series_value(play, "play_type"))
+    is_critical_short = down_distance_tag in {"third_short", "fourth_short"} and distance <= 2
+    immediate_access = bool(
+        {"access_throw", "hot_answer"} & tags
+        or pass_concept in {"stick", "hitch", "slant_flat", "glance"}
+        or rpo_tag in {"stick", "glance", "bubble", "now", "double_slant"}
+    )
+    immediate_rpo_answer = bool(
+        play_type == "rpo"
+        and (
+            {"insert", "hot_answer", "conflict_defender"} & tags
+            or rpo_tag in {"stick", "glance", "bubble", "now", "double_slant"}
+        )
+    )
 
     if is_short:
+        if play_type == "run":
+            score += add_reason(reasons, 4.0, "tactical: run-first answer is preferred in short yardage")
         if "inside_run" in tags:
             score += add_reason(reasons, 5.0, "tactical: inside_run fits short yardage")
         if "gap_scheme" in tags:
             score += add_reason(reasons, 5.0, "tactical: gap_scheme fits short yardage")
+        if "insert" in tags:
+            score += add_reason(reasons, 4.0, "tactical: insert element fits tight short-yardage boxes")
         if "quick_game" in tags:
-            score += add_reason(reasons, 4.0, "tactical: quick_game fits short yardage")
+            if is_critical_short and immediate_access:
+                score += add_reason(reasons, 4.0, "tactical: immediate quick-game answer fits critical short yardage")
+            elif is_critical_short:
+                score += add_reason(reasons, 1.0, "tactical: generic quick-game has limited value in critical short yardage")
+            else:
+                score += add_reason(reasons, 4.0, "tactical: quick_game fits short yardage")
         if rpo_tag and rpo_tag != "none":
-            score += add_reason(reasons, 4.0, "tactical: rpo is useful in short yardage")
-        if play_action and not deep_concept and "slow_developing" not in tags:
+            if is_critical_short and immediate_rpo_answer:
+                score += add_reason(reasons, 5.0, "tactical: immediate RPO access throw can convert critical short yardage")
+            else:
+                score += add_reason(reasons, 4.0, "tactical: rpo is useful in short yardage")
+        if play_action and is_critical_short:
+            score += add_reason(reasons, -6.0, "tactical: play_action is low percentage when only 1-2 yards are needed")
+        elif play_action and not deep_concept and "slow_developing" not in tags:
             score += add_reason(reasons, 2.0, "tactical: play_action is viable in short yardage")
+        if (
+            is_critical_short
+            and play_type == "pass"
+            and {"man_beater"} & tags
+            and not immediate_access
+        ):
+            score += add_reason(reasons, -5.0, "tactical: generic man-beater is less reliable than a true short-yardage answer")
+        if is_critical_short and pass_concept in {"mesh", "beamer"}:
+            score += add_reason(reasons, -4.0, "tactical: longer-developing quick-game is de-emphasized on 3rd/4th and 1-2")
         if deep_concept:
             penalty = -15.0 if down_distance_tag in {"third_short", "fourth_short"} else -6.0
             score += add_reason(reasons, penalty, "tactical: deep concept is risky in short-yardage conversion")
@@ -1190,6 +1295,10 @@ def score_risk_reward(play: pd.Series, situation: Situation) -> tuple[float, lis
     if down_distance_tag in {"third_short", "fourth_short"}:
         if {"inside_run", "quick_game", "rpo", "gap_scheme"} & tags:
             score += add_reason(reasons, 3.0, "risk-reward: efficient answer for short conversion")
+        if play_type == "run" or "insert" in tags or "gap_scheme" in tags:
+            score += add_reason(reasons, 2.0, "risk-reward: run-first profile is reliable when only 1-2 yards are needed")
+        if play_type == "pass" and {"man_beater"} & tags and not ({"access_throw", "hot_answer"} & tags):
+            score += add_reason(reasons, -3.0, "risk-reward: generic dropback conversion is lower percentage than a run or immediate access throw")
         if deep_concept:
             score += add_reason(reasons, -5.0, "risk-reward: deep_shot is too volatile here")
 
@@ -1452,6 +1561,313 @@ def apply_tendency_adjustments(
     return adjustment, reasons
 
 
+def is_pressure_context(
+    situation: Situation,
+    tendencies: TendencySnapshot | None = None,
+) -> bool:
+    """Return whether the current spot meaningfully suggests pressure."""
+    pressure_id = normalize_text(situation.get("pressure_id"))
+    if pressure_id and pressure_id != "none":
+        return True
+    if not tendencies:
+        return False
+    pressure_probabilities = tendencies.get("pressure")
+    if not pressure_probabilities:
+        return False
+    return float(pressure_probabilities.get("yes", 0.0)) >= 0.45
+
+
+def heavy_box_probability(tendencies: TendencySnapshot | None) -> float:
+    """Return the combined heavy-box probability from tendencies when available."""
+    if not tendencies:
+        return 0.0
+    box_probabilities = aggregate_box_probabilities(tendencies.get("box_count"))
+    return float(box_probabilities.get("heavy_box", 0.0)) + float(
+        box_probabilities.get("loaded_box", 0.0)
+    )
+
+
+def is_good_play_action_situation(
+    play: pd.Series,
+    situation: Situation,
+    tendencies: TendencySnapshot | None = None,
+) -> bool:
+    """Return whether the situation is a healthy play-action environment."""
+    down = int(situation["down"])
+    distance = parse_numeric(situation.get("distance")) or 0
+    down_distance_tag = normalize_text(situation.get("down_distance_tag"))
+    field_zone = normalize_text(situation.get("field_zone"))
+    box_label = normalize_text(situation.get("box_label"))
+    tags = infer_play_tags(play)
+    if is_pressure_context(situation, tendencies):
+        return False
+    return bool(
+        (down == 1 and distance == 10)
+        or down_distance_tag == "second_short"
+        or (
+            down in {1, 2}
+            and field_zone == "open_field"
+            and (
+                box_label in {"heavy_box", "loaded_box"}
+                or heavy_box_probability(tendencies) >= 0.45
+                or {"deep_shot", "intermediate_pass", "slow_developing"} & tags
+            )
+        )
+    )
+
+
+def apply_contextual_adjustments(
+    play: pd.Series,
+    situation: Situation,
+    tendencies: TendencySnapshot | None = None,
+) -> tuple[float, list[str]]:
+    """Apply light reranking adjustments after base football scoring."""
+    tags = infer_play_tags(play)
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    play_action = is_play_action(play, tags)
+    screen = is_screen_play(play, tags)
+    down = int(situation["down"])
+    distance = parse_numeric(situation.get("distance")) or 0
+    down_distance_tag = normalize_text(situation.get("down_distance_tag"))
+    field_zone = normalize_text(situation.get("field_zone"))
+    box_label = normalize_text(situation.get("box_label"))
+    pressure_context = is_pressure_context(situation, tendencies)
+    aggressive_coverage = coverage_base(situation.get("coverage_id")) in {"cover0", "cover1"}
+    reasons: list[str] = []
+    adjustment = 0.0
+
+    if play_action:
+        if is_good_play_action_situation(play, situation, tendencies):
+            adjustment += add_reason(
+                reasons,
+                5.0,
+                "rerank: play_action gets a contextual boost in a credible run-conflict situation",
+            )
+        if pressure_context:
+            adjustment += add_reason(
+                reasons,
+                -7.0,
+                "rerank: play_action is de-emphasized versus likely pressure",
+            )
+        if down_distance_tag in {"third_long", "fourth_long"}:
+            adjustment += add_reason(
+                reasons,
+                -6.0,
+                "rerank: play_action is de-emphasized in obvious passing situations",
+            )
+        elif down >= 3 and distance >= 8:
+            adjustment += add_reason(
+                reasons,
+                -4.0,
+                "rerank: play_action loses value in longer passing situations",
+            )
+
+    if screen:
+        if pressure_context:
+            adjustment += add_reason(
+                reasons,
+                6.0,
+                "rerank: screen gets a contextual boost versus pressure",
+            )
+        elif aggressive_coverage:
+            adjustment += add_reason(
+                reasons,
+                2.0,
+                "rerank: screen has some value versus aggressive coverage structure",
+            )
+        else:
+            adjustment += add_reason(
+                reasons,
+                -8.0,
+                "rerank: screen is de-emphasized without pressure context",
+            )
+
+        if down == 1 and distance == 10 and field_zone == "open_field":
+            adjustment += add_reason(
+                reasons,
+                -5.0,
+                "rerank: screen is not a default first-and-10 open-field call",
+            )
+        if down_distance_tag in SHORT_TAGS:
+            adjustment += add_reason(
+                reasons,
+                -4.0,
+                "rerank: screen is de-emphasized in short-yardage situations",
+            )
+        if field_zone in {"goal_line", "redzone"}:
+            adjustment += add_reason(
+                reasons,
+                -6.0,
+                "rerank: screen loses value in condensed-field situations",
+            )
+        if distance >= 8:
+            adjustment += add_reason(
+                reasons,
+                2.0,
+                "rerank: screen keeps some value as a long-yardage constraint answer",
+            )
+        if box_label in {"heavy_box", "loaded_box"} and play_type in {"pass", "screen"}:
+            adjustment += add_reason(
+                reasons,
+                1.0,
+                "rerank: screen gains a small bump versus run-respecting boxes",
+            )
+
+    if (
+        heavy_box_probability(tendencies) >= 0.45
+        and "inside_run" in tags
+        and not (normalize_beats_box(play) & {"heavy_box", "loaded_box"})
+    ):
+        adjustment += add_reason(
+            reasons,
+            -5.0,
+            "rerank: inside run is de-emphasized when tendency data suggests a loaded box",
+        )
+
+    return clamp(adjustment, -15.0, 10.0), reasons
+
+
+def diversity_penalty(
+    recommendation: Recommendation,
+    selected: list[Recommendation],
+) -> tuple[float, list[str], bool]:
+    """Return duplicate penalties while building the final ranked list."""
+    concept_key = str(recommendation.get("main_concept_key", ""))
+    variant_key = str(recommendation.get("variant_group", ""))
+    formation_key = str(recommendation.get("formation_similarity_key", ""))
+    selected_concepts = Counter(str(play.get("main_concept_key", "")) for play in selected)
+    selected_variants = Counter(str(play.get("variant_group", "")) for play in selected)
+    selected_formations = Counter(
+        (
+            str(play.get("main_concept_key", "")),
+            str(play.get("formation_similarity_key", "")),
+        )
+        for play in selected
+    )
+    screen_count = sum(1 for play in selected if bool(play.get("is_screen")))
+    reasons: list[str] = []
+    penalty = 0.0
+    duplicate = False
+
+    concept_count = selected_concepts[concept_key]
+    if concept_count > 0:
+        duplicate = True
+        penalty += add_reason(
+            reasons,
+            -(10.0 * concept_count),
+            "rerank: diversity penalty for a repeated concept family",
+        )
+
+    if selected_variants[variant_key] > 0:
+        duplicate = True
+        penalty += add_reason(
+            reasons,
+            -8.0,
+            "rerank: same concept variant already selected higher",
+        )
+    elif bool(recommendation.get("is_play_action")) and concept_count > 0:
+        duplicate = True
+        penalty += add_reason(
+            reasons,
+            -10.0,
+            "rerank: play_action version is treated as a variant of the same concept",
+        )
+    elif concept_count > 0:
+        duplicate = True
+        penalty += add_reason(
+            reasons,
+            -6.0,
+            "rerank: non-play-action version is treated as a variant of the same concept",
+        )
+
+    if formation_key and selected_formations[(concept_key, formation_key)] > 0:
+        duplicate = True
+        penalty += add_reason(
+            reasons,
+            -4.0,
+            "rerank: very similar formation presentation already appears higher",
+        )
+
+    if bool(recommendation.get("is_screen")) and screen_count > 0:
+        duplicate = True
+        penalty += add_reason(
+            reasons,
+            -(12.0 * screen_count),
+            "rerank: avoid stacking multiple screens near the top",
+        )
+
+    return penalty, reasons, duplicate
+
+
+def recommendation_sort_key(play: Recommendation) -> tuple[float, int, int, int, float, int]:
+    """Return the stable tie-break ordering shared by the ranking passes."""
+    return (
+        -float(play["score"]),
+        -int(bool(play["tie_breakers"]["exact_down_distance_match"])),
+        -int(bool(play["tie_breakers"]["exact_field_zone_match"])),
+        -int(play["tie_breakers"]["exact_defensive_structure_match_count"]),
+        -float(play["tie_breakers"]["tactical_fit_score"]),
+        int(play["_original_index"]),
+    )
+
+
+def rerank_recommendations(
+    recommendations: list[Recommendation],
+    *,
+    top_n: int,
+    max_per_concept: int | None,
+) -> list[Recommendation]:
+    """Greedily rerank recommendations with diversity penalties."""
+    remaining = list(sorted(recommendations, key=recommendation_sort_key))
+    final_ranked: list[Recommendation] = []
+    concept_counts: Counter[str] = Counter()
+    concept_limit = int(max_per_concept) if max_per_concept is not None else None
+
+    while remaining and len(final_ranked) < top_n:
+        best_index = -1
+        best_candidate: Recommendation | None = None
+        best_sort_key: tuple[float, int, int, int, float, int] | None = None
+        best_penalty = 0.0
+        best_penalty_reasons: list[str] = []
+        best_duplicate = False
+
+        for index, candidate in enumerate(remaining):
+            concept_key = str(candidate.get("main_concept_key", ""))
+            if concept_limit is not None and concept_counts[concept_key] >= concept_limit:
+                continue
+
+            penalty, penalty_reasons, duplicate = diversity_penalty(candidate, final_ranked)
+            adjusted = clamp(float(candidate["pre_rerank_score"]) + penalty, 0.0, 100.0)
+            trial = dict(candidate)
+            trial["score"] = adjusted
+            sort_key = recommendation_sort_key(trial)
+            if best_sort_key is None or sort_key < best_sort_key:
+                best_index = index
+                best_candidate = candidate
+                best_sort_key = sort_key
+                best_penalty = penalty
+                best_penalty_reasons = penalty_reasons
+                best_duplicate = duplicate
+
+        if best_candidate is None:
+            break
+
+        remaining.pop(best_index)
+        best_candidate["score"] = clamp(
+            float(best_candidate["pre_rerank_score"]) + best_penalty,
+            0.0,
+            100.0,
+        )
+        best_candidate["duplicate_fallback"] = best_duplicate
+        if best_penalty_reasons:
+            best_candidate["reasons"] = [*best_candidate["reasons"], *best_penalty_reasons]
+
+        concept_counts[str(best_candidate.get("main_concept_key", ""))] += 1
+        final_ranked.append(best_candidate)
+
+    return final_ranked
+
+
 def recommend_plays(
     playbook: pd.DataFrame,
     situation: Situation,
@@ -1479,20 +1895,35 @@ def recommend_plays(
             situation,
             intent,
         )
+        contextual_adjustment, contextual_reasons = apply_contextual_adjustments(
+            play,
+            situation,
+            tendencies,
+        )
         final_score = clamp(
-            float(recommendation["base_score"]) + tendency_adjustment + intent_adjustment,
+            float(recommendation["base_score"])
+            + tendency_adjustment
+            + intent_adjustment
+            + contextual_adjustment,
             0.0,
             100.0,
         )
         recommendation["tendency_adjustment"] = tendency_adjustment
+        recommendation["contextual_adjustment"] = contextual_adjustment
+        recommendation["pre_rerank_score"] = final_score
         recommendation["score"] = final_score
         recommendation["used_tendencies"] = tendencies is not None
         recommendation["reasons"] = [
             *recommendation["reasons"],
             *tendency_reasons,
             *intent_reasons,
+            *contextual_reasons,
         ]
         recommendation["concept_group"] = str(recommendation["main_concept_key"])
+        recommendation["variant_group"] = concept_variant_key(play)
+        recommendation["formation_similarity_key"] = formation_similarity_key(play)
+        recommendation["is_play_action"] = is_play_action(play)
+        recommendation["is_screen"] = is_screen_play(play)
 
         if min_score is not None and final_score < min_score:
             continue
@@ -1500,47 +1931,18 @@ def recommend_plays(
         recommendation["_original_index"] = index
         recommendations.append(recommendation)
 
-    ranked = sorted(
+    final_ranked = rerank_recommendations(
         recommendations,
-        key=lambda play: (
-            -float(play["score"]),
-            -int(bool(play["tie_breakers"]["exact_down_distance_match"])),
-            -int(bool(play["tie_breakers"]["exact_field_zone_match"])),
-            -int(play["tie_breakers"]["exact_defensive_structure_match_count"]),
-            -float(play["tie_breakers"]["tactical_fit_score"]),
-            int(play["_original_index"]),
-        ),
+        top_n=top_n,
+        max_per_concept=max_per_concept,
     )
-
-    unique_recommendations: list[Recommendation] = []
-    duplicate_candidates: list[Recommendation] = []
-    seen_concepts: set[str] = set()
-    for recommendation in ranked:
-        concept_key = str(recommendation.get("main_concept_key", ""))
-        if concept_key not in seen_concepts:
-            seen_concepts.add(concept_key)
-            unique_recommendations.append(recommendation)
-            continue
-        recommendation["duplicate_fallback"] = True
-        duplicate_candidates.append(recommendation)
-
-    final_ranked = unique_recommendations[:top_n]
-    if len(final_ranked) < top_n:
-        concept_counts = Counter(
-            str(recommendation.get("main_concept_key", ""))
-            for recommendation in final_ranked
-        )
-        concept_limit = int(max_per_concept) if max_per_concept is not None else None
-        for recommendation in duplicate_candidates:
-            concept_key = str(recommendation.get("main_concept_key", ""))
-            if concept_limit is not None and concept_counts[concept_key] >= concept_limit:
-                continue
-            concept_counts[concept_key] += 1
-            final_ranked.append(recommendation)
-            if len(final_ranked) >= top_n:
-                break
 
     for recommendation in final_ranked:
         recommendation.pop("_original_index", None)
+        recommendation.pop("pre_rerank_score", None)
+        recommendation.pop("variant_group", None)
+        recommendation.pop("formation_similarity_key", None)
+        recommendation.pop("is_play_action", None)
+        recommendation.pop("is_screen", None)
 
     return final_ranked[:top_n]

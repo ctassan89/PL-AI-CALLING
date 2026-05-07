@@ -105,6 +105,67 @@ def normalize_text(value: object) -> str:
     return text
 
 
+def normalize_tendency_distance_bucket(value: object) -> str:
+    """Normalize CLI distance input into opponent tendency buckets."""
+    normalized = normalize_text(value).lower().replace("-", "_")
+    if not normalized:
+        return ""
+    if normalized in {"short", "medium", "long", "very_long"}:
+        return normalized
+    if normalized == "xlong":
+        return "very_long"
+    try:
+        yards = int(float(normalized))
+    except ValueError:
+        return normalized
+    if yards <= 2:
+        return "short"
+    if yards <= 6:
+        return "medium"
+    if yards <= 10:
+        return "long"
+    return "very_long"
+
+
+def normalize_tendency_field_zone(value: object) -> str:
+    """Normalize field-zone input while preserving canonical tendency tokens."""
+    return normalize_text(value).lower().replace("-", "_")
+
+
+def build_tendency_lookup_situation(args: argparse.Namespace) -> dict[str, str]:
+    """Build the analyzer lookup keys from CLI arguments."""
+    return {
+        "opponent": normalize_text(args.opponent).lower(),
+        "down": str(args.down),
+        "distance_bucket": normalize_tendency_distance_bucket(args.distance),
+        "field_zone": normalize_tendency_field_zone(args.field_zone),
+        "personnel": normalize_text(args.personnel).lower(),
+    }
+
+
+def lookup_opponent_tendencies(
+    analyzer: OpponentTendencyAnalyzer,
+    situation: dict[str, str],
+) -> tuple[dict[str, dict[str, float]] | None, str | None]:
+    """Return matched tendencies plus an optional debug-safe miss reason."""
+    if not situation.get("opponent"):
+        return None, "no opponent provided"
+
+    matched = analyzer.tendencies
+    for key in ("opponent", "down", "distance_bucket", "field_zone", "personnel"):
+        value = situation.get(key, "")
+        if not value:
+            continue
+        matched = matched[matched[key] == value]
+    if matched.empty:
+        return None, "no matching tendency bucket found"
+
+    tendencies = analyzer.lookup(situation)
+    if not any(tendencies.values()):
+        return None, "no matching tendency bucket found"
+    return tendencies, None
+
+
 def is_meaningful(value: object, *, ignore: set[str] | None = None) -> bool:
     """Return whether a value should be displayed."""
     normalized = normalize_text(value).lower()
@@ -196,11 +257,17 @@ def print_recommendations(
     top_n: int,
     show_reasons: bool,
     pressure_id: str,
+    opponent_tendencies_used: bool,
+    opponent_tendency_reason: str | None,
     formation_names: dict[str, str],
     playbook_rows: dict[str, dict[str, object]],
 ) -> None:
     """Print a compact recommendation list."""
     print(f"Top {top_n} recommended plays:\n")
+    print(f"Opponent tendencies used: {'yes' if opponent_tendencies_used else 'no'}")
+    if opponent_tendency_reason:
+        print(opponent_tendency_reason)
+    print()
     if is_meaningful(pressure_id):
         print(f"Pressure context: {pressure_id}\n")
 
@@ -259,18 +326,19 @@ def main() -> None:
     )
 
     tendencies = None
+    tendencies_used = False
+    tendencies_reason: str | None = None
     tendencies_path = Path(args.opponent_tendencies_path)
     if args.opponent and tendencies_path.exists():
         analyzer = OpponentTendencyAnalyzer.from_csv(tendencies_path)
-        tendencies = analyzer.lookup(
-            {
-                "opponent": args.opponent,
-                "down": args.down,
-                "distance_bucket": args.distance,
-                "field_zone": args.field_zone,
-                "personnel": args.personnel or "",
-            }
+        tendency_situation = build_tendency_lookup_situation(args)
+        tendencies, tendencies_reason = lookup_opponent_tendencies(
+            analyzer,
+            tendency_situation,
         )
+        tendencies_used = tendencies is not None
+    elif args.opponent:
+        tendencies_reason = "opponent tendencies file not found"
 
     top_plays = recommend_plays(
         playbook,
@@ -289,6 +357,8 @@ def main() -> None:
         top_n=min(args.top_n, len(top_plays)),
         show_reasons=args.show_reasons,
         pressure_id=pressure_id,
+        opponent_tendencies_used=tendencies_used,
+        opponent_tendency_reason=tendencies_reason,
         formation_names=formation_names,
         playbook_rows=playbook_rows,
     )

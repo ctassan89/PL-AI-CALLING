@@ -38,6 +38,8 @@ def make_play(
     beats_coverage: str = "cover3",
     beats_pressure: str = "none",
     preferred_down_distance: str = "second_medium",
+    preferred_field_zone: str = "open_field",
+    personnel: str = "10",
     tags: str = "quick_game",
 ) -> dict[str, str]:
     """Build a playbook row for CLI tests."""
@@ -54,28 +56,35 @@ def make_play(
         "rpo_tag": rpo_tag,
         "play_action": play_action,
         "formation_id": formation_id,
-        "personnel": "10",
+        "personnel": personnel,
         "beats_front": "even",
         "beats_coverage": beats_coverage,
         "beats_pressure": beats_pressure,
         "beats_box": "light_box;normal_box;heavy_box",
         "preferred_down_distance": preferred_down_distance,
-        "preferred_field_zone": "open_field",
+        "preferred_field_zone": preferred_field_zone,
         "tags": tags,
     }
 
 
-def run_suggest(playbook_path: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
+def run_suggest(
+    playbook_path: Path,
+    *extra_args: str,
+    down: str = "2",
+    distance: str = "4",
+    field_zone: str = "open_field",
+    personnel: str = "10",
+) -> subprocess.CompletedProcess[str]:
     """Run the suggest CLI against a temp playbook."""
     command = [
         sys.executable,
         str(SUGGEST_SCRIPT),
         "--down",
-        "2",
+        down,
         "--distance",
-        "4",
+        distance,
         "--field-zone",
-        "open_field",
+        field_zone,
         "--front",
         "even",
         "--coverage",
@@ -83,7 +92,7 @@ def run_suggest(playbook_path: Path, *extra_args: str) -> subprocess.CompletedPr
         "--box-count",
         "6",
         "--personnel",
-        "10",
+        personnel,
         "--playbook-path",
         str(playbook_path),
         *extra_args,
@@ -224,6 +233,7 @@ def test_suggest_play_defaults_pressure_id_to_none(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "Pressure context:" not in result.stdout
+    assert "Opponent tendencies used: no" in result.stdout
 
 
 def test_suggest_play_accepts_specific_coverage_id(tmp_path: Path) -> None:
@@ -247,3 +257,103 @@ def test_suggest_play_accepts_specific_coverage_id(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "Spacing DBLS" in result.stdout
     assert "coverage: base match cover3" in result.stdout
+
+
+def test_suggest_play_uses_default_opponent_tendencies_for_known_rhinos_bucket(
+    tmp_path: Path,
+) -> None:
+    """Known Rhinos situations should load the canonical default tendency file."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play(
+                "stick_dot",
+                "Stick DOT",
+                "gun_1rb_2x2_spread_te_off",
+                personnel="11",
+                preferred_down_distance="third_medium",
+                preferred_field_zone="midfield",
+                beats_coverage="cover1_man_free",
+                tags="quick_game",
+            )
+        ],
+    )
+
+    result = run_suggest(
+        playbook_path,
+        "--opponent",
+        "Rhinos",
+        "--top-n",
+        "1",
+        down="3",
+        distance="medium",
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    assert result.returncode == 0
+    assert "Opponent tendencies used: yes" in result.stdout
+
+
+def test_suggest_play_opponent_matching_is_case_insensitive(tmp_path: Path) -> None:
+    """Lowercase opponent names should match the same Rhinos tendency bucket."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play(
+                "stick_dot",
+                "Stick DOT",
+                "gun_1rb_2x2_spread_te_off",
+                personnel="11",
+                preferred_down_distance="third_medium",
+                preferred_field_zone="midfield",
+                beats_coverage="cover1_man_free",
+                tags="quick_game",
+            )
+        ],
+    )
+
+    result = run_suggest(
+        playbook_path,
+        "--opponent",
+        "rhinos",
+        "--top-n",
+        "1",
+        down="3",
+        distance="medium",
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    assert result.returncode == 0
+    assert "Opponent tendencies used: yes" in result.stdout
+
+
+def test_suggest_play_unknown_opponent_reports_no_tendencies(tmp_path: Path) -> None:
+    """Unknown opponents should not silently use global fallback tendency data."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TANGO", "gun_1rb_3x1_spread_y_middle")],
+    )
+
+    result = run_suggest(
+        playbook_path,
+        "--opponent",
+        "Unknowns",
+        "--top-n",
+        "1",
+        down="3",
+        distance="medium",
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    assert result.returncode == 0
+    assert "Opponent tendencies used: no" in result.stdout
+    assert "no matching tendency bucket found" in result.stdout

@@ -50,6 +50,12 @@ python3 scripts/suggest_play.py \
 
 The standard suggester builds a normalized situation with `build_situation(...)` and ranks plays through `recommend_plays(...)`.
 
+Ranking happens in three passes:
+
+- The engine computes base football-fit scores from down/distance, field zone, defensive structure, pressure, and risk/reward.
+- It then applies lightweight contextual reranking adjustments, such as preferring play-action only in good play-action spots and de-emphasizing screens when pressure is not present.
+- It finishes with diversity penalties so the top recommendations are less likely to be filled with near-duplicate concepts across play-action variants or very similar formations.
+
 Coverage handling stays intentionally split:
 
 - `data/taxonomy/coverages.csv` is the full defensive coverage taxonomy, including specific variants like `cover3_buzz_field` and `cover7_stubbie_trips`.

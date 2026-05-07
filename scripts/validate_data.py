@@ -17,12 +17,14 @@ OPPONENT_TENDENCIES_PATH = DATA_DIR / "opponent_tendencies.csv"
 FORMATION_TAXONOMY_PATH = TAXONOMY_DIR / "formations.csv"
 
 ALLOWED_DOWNS = {"1", "2", "3", "4"}
-ALLOWED_DISTANCES = {"short", "medium", "long", "xlong"}
+ALLOWED_DISTANCES = {"short", "medium", "long", "xlong", "very_long"}
 ALLOWED_FIELD_ZONES = {
+    "open_field",
     "own_redzone",
     "own_territory",
     "midfield",
     "opp_territory",
+    "red_zone",
     "redzone",
     "goal_line",
 }

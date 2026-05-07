@@ -149,8 +149,14 @@ class OpponentTendencyTests(unittest.TestCase):
             }
         )
 
-        self.assertAlmostEqual(result["coverage"]["cover3"], 2 / 3)
-        self.assertAlmostEqual(result["coverage"]["cover1"], 1 / 3)
+        self.assertEqual(
+            set(result["coverage"]),
+            {"cover3_buzz_field", "cover1_man_free"},
+        )
+        self.assertAlmostEqual(result["coverage"]["cover3_buzz_field"], 7 / 12)
+        self.assertAlmostEqual(result["coverage"]["cover1_man_free"], 5 / 12)
+        self.assertNotIn("cover3", result["coverage"])
+        self.assertNotIn("cover1", result["coverage"])
         self.assertEqual(result["pressure"]["yes"], 1.0)
         self.assertAlmostEqual(result["box_count"]["8"], 2 / 3)
         self.assertEqual(result["def_front"]["odd_tite"], 1.0)
@@ -182,8 +188,41 @@ class OpponentTendencyTests(unittest.TestCase):
         )
         adjusted = recommend_plays(playbook, situation, tendencies=tendencies, limit=4)
 
-        self.assertNotEqual(base[0]["play_id"], adjusted[0]["play_id"])
-        self.assertIn(adjusted[0]["play_id"], {"flood", "screen"})
+        base_by_id = {play["play_id"]: play for play in base}
+        adjusted_by_id = {play["play_id"]: play for play in adjusted}
+
+        self.assertTrue(all(play["used_tendencies"] for play in adjusted))
+        self.assertTrue(
+            any(
+                base_by_id[play_id]["score"] != adjusted_by_id[play_id]["score"]
+                for play_id in adjusted_by_id
+            )
+        )
+
+        flood = adjusted_by_id["flood"]
+        screen = adjusted_by_id["screen"]
+        inside_zone = adjusted_by_id["inside_zone"]
+
+        self.assertLess(flood["score"], base_by_id["flood"]["score"])
+        self.assertGreater(screen["score"], base_by_id["screen"]["score"])
+        self.assertLess(inside_zone["score"], base_by_id["inside_zone"]["score"])
+
+        self.assertTrue(
+            any("tendency: pressure profile hurts slow-developing concepts" in reason for reason in flood["reasons"])
+        )
+        self.assertTrue(
+            any("rerank: play_action is de-emphasized versus likely pressure" in reason for reason in flood["reasons"])
+        )
+        self.assertTrue(
+            any("tendency: pressure profile favors quick answers" in reason for reason in screen["reasons"])
+        )
+        self.assertTrue(
+            any(
+                "tendency: heavy box profile hurts inside runs without box fit" in reason
+                or "rerank: inside run is de-emphasized when tendency data suggests a loaded box" in reason
+                for reason in inside_zone["reasons"]
+            )
+        )
 
     def test_tendencies_cannot_make_inside_zone_top_call_on_third_and_fifteen(self) -> None:
         playbook = make_playbook()

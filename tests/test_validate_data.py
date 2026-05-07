@@ -283,6 +283,28 @@ def test_validate_data_accepts_valid_dataset(tmp_path: Path) -> None:
     assert result.stdout.strip() == "Data validation passed."
 
 
+def test_validate_data_accepts_canonical_opponent_tendency_aliases(tmp_path: Path) -> None:
+    """Opponent tendencies should accept the current canonical distance and field-zone labels."""
+    create_fake_repo(
+        tmp_path,
+        opponent_rows=[
+            build_valid_opponent_tendency_row(
+                down="3",
+                distance="very_long",
+                field_zone="open_field",
+            ),
+            build_valid_opponent_tendency_row(
+                game_id="game_002",
+                down="4",
+                distance="short",
+                field_zone="red_zone",
+            ),
+        ],
+    )
+
+    assert validate_data(base_dir=tmp_path) == []
+
+
 def test_validate_data_allows_missing_optional_opponent_file(tmp_path: Path) -> None:
     """Opponent tendencies should be validated only when present."""
     create_fake_repo(tmp_path, include_opponent_file=False)
