@@ -38,9 +38,10 @@ def make_play(
     preferred_field_zone: str = "open_field;redzone;goal_line",
     personnel: str = "10",
     tags: str = "quick_game",
+    **overrides: str,
 ) -> dict[str, str]:
     """Build a playbook row for session CLI tests."""
-    return {
+    play = {
         "play_id": play_id,
         "play_name": play_name,
         "play_family": "dropback",
@@ -62,6 +63,8 @@ def make_play(
         "preferred_field_zone": preferred_field_zone,
         "tags": tags,
     }
+    play.update(overrides)
+    return play
 
 
 def run_session(
@@ -158,7 +161,7 @@ def test_session_missing_defense_context_uses_defaults(tmp_path: Path) -> None:
 
 
 def test_session_top_n_controls_number_of_recommendations(tmp_path: Path) -> None:
-    """The session CLI should respect --top-n."""
+    """The session CLI should respect unified top-N output when blocks are not used."""
     playbook_path = tmp_path / "playbook.csv"
     write_csv(
         playbook_path,
@@ -170,13 +173,186 @@ def test_session_top_n_controls_number_of_recommendations(tmp_path: Path) -> Non
         ],
     )
 
-    result = run_session(playbook_path, "primo e 10 own 25\nq\n", "--top-n", "2")
+    result = run_session(playbook_path, "third and 6 midfield\nq\n", "--top-n", "2")
 
     assert result.returncode == 0
-    assert "Top 2 recommended plays:" in result.stdout
-    assert result.stdout.count("\n1. ") == 1
-    assert result.stdout.count("\n2. ") == 1
-    assert "\n3. " not in result.stdout
+    assert "Conversion pass options:" in result.stdout
+    assert "Pressure answers:" in result.stdout
+    assert "Top 2 recommended plays:" not in result.stdout
+    assert result.stdout.count("Conversion pass options:") == 1
+
+
+def test_session_touchdown_stops_before_rendering_next_block(tmp_path: Path) -> None:
+    """A touchdown update should end the drive before another recommendation render."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TRIPS")],
+    )
+
+    result = run_session(playbook_path, "first and 1 opp 1 personnel 11\n1\n", "--top-n", "2")
+
+    assert result.returncode == 0
+    assert "Drive ended: touchdown" in result.stdout
+    assert "Current situation: 1st & 1, opp 1, goal_line" in result.stdout
+    assert "Current situation: 1st & 10, opp 0, goal_line" not in result.stdout
+    assert result.stdout.count("Drive ended: touchdown") == 1
+
+
+def test_session_first_and_ten_uses_run_rpo_pass_blocks(tmp_path: Path) -> None:
+    """1st-and-10 should print run, RPO, and pass blocks."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", tags="inside_run;gap_scheme"),
+            make_play("rpo", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", tags="rpo;quick_game;conflict_defender;hot_answer"),
+            make_play("pass", "Stick TRIPS", pass_concept="stick", tags="quick_game"),
+        ],
+    )
+
+    result = run_session(playbook_path, "first and 10 own 25 personnel 11\nq\n", "--top-n", "5", "--block-size", "2")
+
+    assert result.returncode == 0
+    assert "Run options:" in result.stdout
+    assert "RPO options:" in result.stdout
+    assert "Pass options:" in result.stdout
+
+
+def test_session_second_short_uses_shot_safe_rpo_blocks(tmp_path: Path) -> None:
+    """2nd-and-short should print shot, safe, and RPO conflict blocks."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play("shot", "Yankee", pass_concept="yankee", play_action="true", preferred_down_distance="second_short", tags="shot_play;deep_shot;play_action"),
+            make_play("safe", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", preferred_down_distance="second_short", tags="inside_run;gap_scheme"),
+            make_play("rpo", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", preferred_down_distance="second_short", tags="rpo;quick_game;insert;conflict_defender"),
+        ],
+    )
+
+    result = run_session(playbook_path, "second and 2 own 25 personnel 11\nq\n", "--top-n", "5", "--block-size", "2")
+
+    assert result.returncode == 0
+    assert "Shot play options:" in result.stdout
+    assert "Safe conversion options:" in result.stdout
+    assert "RPO conflict options:" in result.stdout
+
+
+def test_session_avoids_duplicate_play_ids_across_blocks_when_possible() -> None:
+    """Block rendering should avoid reusing the same play across blocks when depth exists."""
+    playbook = pd.DataFrame(
+        [
+            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", tags="inside_run;gap_scheme"),
+            make_play("rpo1", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", tags="rpo;quick_game;conflict_defender"),
+            make_play("rpo2", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", tags="rpo;quick_game;insert;conflict_defender"),
+            make_play("pass", "Stick", pass_concept="stick", tags="quick_game"),
+        ]
+    )
+    situation = playcaller_session.build_situation(
+        down=1,
+        distance=10,
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    groups = playcaller_session.build_recommendation_groups(
+        playbook,
+        situation,
+        tendencies=None,
+        top_n=5,
+        block_size=2,
+        intent="balanced",
+    )
+
+    seen: set[str] = set()
+    for _, plays in groups:
+        for play in plays:
+            play_id = str(play["play_id"])
+            assert play_id not in seen
+            seen.add(play_id)
+
+
+def test_choose_output_blocks_maps_third_long_to_conversion_pressure_constraint() -> None:
+    """3rd-and-long should use long-yardage coordinator blocks."""
+    situation = playcaller_session.build_situation(
+        down=3,
+        distance=10,
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    blocks = playcaller_session.choose_output_blocks(situation)
+
+    assert [block.title for block in blocks] == [
+        "Conversion pass options:",
+        "Pressure answers:",
+        "Constraint / screen options:",
+    ]
+
+
+def test_build_recommendation_groups_returns_dual_lists_on_second_short() -> None:
+    """Second-and-short should automatically split shot, safe, and RPO blocks."""
+    playbook = pd.DataFrame(
+        [
+            make_play(
+                "shot",
+                "Yankee",
+                pass_concept="yankee",
+                preferred_down_distance="second_short",
+                tags="shot_play;deep_shot;play_action",
+                play_action="true",
+            ),
+            make_play(
+                "safe",
+                "Stick",
+                pass_concept="stick",
+                preferred_down_distance="second_short",
+                tags="quick_game",
+            ),
+            make_play(
+                "rpo",
+                "Glance RPO",
+                play_type="rpo",
+                play_family="rpo",
+                run_scheme="inside_zone",
+                rpo_tag="glance",
+                pass_concept="glance",
+                preferred_down_distance="second_short",
+                tags="rpo;quick_game;conflict_defender",
+            ),
+        ]
+    )
+    situation = playcaller_session.build_situation(
+        down=2,
+        distance=2,
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    groups = playcaller_session.build_recommendation_groups(
+        playbook,
+        situation,
+        tendencies=None,
+        top_n=2,
+        block_size=2,
+        intent="balanced",
+    )
+
+    assert [heading for heading, _ in groups] == [
+        "Shot play options:",
+        "Safe conversion options:",
+        "RPO conflict options:",
+    ]
+    shot_ids = {play["play_id"] for play in groups[0][1]}
+    safe_ids = [play["play_id"] for play in groups[1][1]]
+    rpo_ids = [play["play_id"] for play in groups[2][1]]
+    assert "shot" in shot_ids
+    assert "shot" not in safe_ids
+    assert "rpo" in rpo_ids
 
 
 def test_session_show_reasons_toggles_reason_output(tmp_path: Path) -> None:
@@ -353,3 +529,42 @@ def test_session_passes_tendencies_into_recommend_plays(monkeypatch: object) -> 
     )
 
     assert captured["tendencies"] is not None
+
+
+def test_format_matched_tendency_bucket_uses_only_matched_keys() -> None:
+    """Matched tendency bucket output should stay compact and explicit."""
+    bucket = playcaller_session.format_matched_tendency_bucket(
+        {
+            "opponent": "rhinos",
+            "down": "2",
+            "distance_bucket": "long",
+            "field_zone": "open_field",
+            "personnel": "10",
+        },
+        ("opponent", "down", "distance_bucket", "field_zone", "personnel"),
+    )
+
+    assert bucket == "opponent=rhinos, down=2, distance=long, field_zone=open_field, personnel=10"
+
+
+def test_lookup_tendencies_returns_explicit_personnel_fallback_metadata() -> None:
+    """Session lookup should surface when it leaves the personnel-specific bucket."""
+    analyzer = playcaller_session.OpponentTendencyAnalyzer.from_csv(
+        PROJECT_ROOT / "data" / "opponent_tendencies.csv"
+    )
+    args = argparse.Namespace(opponent="Rhinos")
+    state = playcaller_session.GameState(down=1, distance=10, field_position=50)
+    defense_state = playcaller_session.DefenseState(personnel="12")
+
+    tendencies, reason, metadata = playcaller_session.lookup_tendencies(
+        analyzer,
+        args,
+        state,
+        defense_state,
+    )
+
+    assert reason is None
+    assert tendencies is not None
+    assert metadata is not None
+    assert metadata["fallback_used"] is True
+    assert metadata["matched_keys"] == ("opponent", "down", "distance_bucket", "field_zone")

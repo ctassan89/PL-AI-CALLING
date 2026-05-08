@@ -60,6 +60,7 @@ NORMALIZED_COLUMNS = [
     "coverage",
     "pressure",
     "play_result",
+    "weight",
 ]
 
 DEFAULT_GROUP_KEYS = ("opponent", "down", "distance_bucket", "field_zone", "personnel")
@@ -110,6 +111,8 @@ def _normalize_pressure_from_blitzers(value: object) -> str:
 
 def _normalize_rich_schema(dataframe: pd.DataFrame) -> pd.DataFrame:
     """Map the canonical rich schema to the internal analyzer schema."""
+    sample_sizes = pd.to_numeric(dataframe["sample_size"], errors="coerce").fillna(1.0)
+    frequencies = pd.to_numeric(dataframe["frequency"], errors="coerce").fillna(1.0)
     normalized = pd.DataFrame(
         {
             "opponent": dataframe["team"].map(_normalize_value),
@@ -122,8 +125,10 @@ def _normalize_rich_schema(dataframe: pd.DataFrame) -> pd.DataFrame:
             "coverage": dataframe["coverage_id"].map(_normalize_value),
             "pressure": dataframe["blitzers"].map(_normalize_pressure_from_blitzers),
             "play_result": dataframe["notes"].map(_normalize_value),
+            "weight": (sample_sizes * frequencies).clip(lower=0.0),
         }
     )
+    normalized.loc[normalized["weight"] <= 0.0, "weight"] = 1.0
     return normalized
 
 
@@ -135,6 +140,7 @@ def _normalize_simplified_schema(dataframe: pd.DataFrame) -> pd.DataFrame:
             normalized[column] = normalized[column].map(_normalize_distance_bucket)
         else:
             normalized[column] = normalized[column].map(_normalize_value)
+    normalized["weight"] = 1.0
     return normalized[NORMALIZED_COLUMNS]
 
 
@@ -181,12 +187,38 @@ def _filter_by_keys(
 
 def _value_probabilities(dataframe: pd.DataFrame, column: str) -> dict[str, float]:
     """Convert a categorical column into probabilities."""
-    values = dataframe[column]
-    values = values[values != ""]
+    values = dataframe[[column]].copy()
+    values = values[values[column] != ""]
     if values.empty:
         return {}
-    probabilities = values.value_counts(normalize=True).sort_values(ascending=False)
+    weights = pd.to_numeric(dataframe.loc[values.index, "weight"], errors="coerce").fillna(1.0)
+    values["weight"] = weights
+    weighted = values.groupby(column, sort=False)["weight"].sum()
+    total_weight = float(weighted.sum())
+    if total_weight <= 0:
+        return {}
+    probabilities = (weighted / total_weight).sort_values(ascending=False)
     return {str(index): float(value) for index, value in probabilities.items()}
+
+
+def _key_order(personnel_provided: bool) -> list[tuple[str, ...]]:
+    """Return fallback key orders while making personnel handling explicit."""
+    if personnel_provided:
+        return [
+            DEFAULT_GROUP_KEYS,
+            ("opponent", "down", "distance_bucket", "field_zone"),
+            ("opponent", "down", "distance_bucket"),
+            ("opponent", "down"),
+            ("opponent",),
+            (),
+        ]
+    return [
+        ("opponent", "down", "distance_bucket", "field_zone"),
+        ("opponent", "down", "distance_bucket"),
+        ("opponent", "down"),
+        ("opponent",),
+        (),
+    ]
 
 
 class OpponentTendencyAnalyzer:
@@ -200,6 +232,38 @@ class OpponentTendencyAnalyzer:
         """Create an analyzer from a CSV file."""
         return cls(load_opponent_tendencies(path))
 
+    def lookup_with_metadata(
+        self,
+        situation: Mapping[str, Any],
+        *,
+        min_rows: int = 1,
+    ) -> dict[str, Any]:
+        """Return the matched tendency snapshot plus lookup metadata."""
+        normalized_personnel = _normalize_value(situation.get("personnel"))
+        key_orders = _key_order(bool(normalized_personnel))
+        matched = self.tendencies
+        matched_keys: tuple[str, ...] = ()
+
+        for keys in key_orders:
+            candidate = _filter_by_keys(self.tendencies, situation, keys)
+            if len(candidate) >= min_rows:
+                matched = candidate
+                matched_keys = tuple(keys)
+                break
+
+        fallback_used = bool(normalized_personnel) and "personnel" not in matched_keys
+        return {
+            "tendencies": {
+                "coverage": _value_probabilities(matched, "coverage"),
+                "pressure": _value_probabilities(matched, "pressure"),
+                "box_count": _value_probabilities(matched, "box_count"),
+                "def_front": _value_probabilities(matched, "def_front"),
+            },
+            "matched_keys": matched_keys,
+            "matched_row_count": int(len(matched)),
+            "fallback_used": fallback_used,
+        }
+
     def lookup(
         self,
         situation: Mapping[str, Any],
@@ -207,25 +271,4 @@ class OpponentTendencyAnalyzer:
         min_rows: int = 1,
     ) -> dict[str, dict[str, float]]:
         """Return the most likely tendencies for the most specific matching bucket."""
-        key_orders = [
-            DEFAULT_GROUP_KEYS,
-            ("opponent", "down", "distance_bucket", "field_zone"),
-            ("opponent", "down", "distance_bucket"),
-            ("opponent", "down"),
-            ("opponent",),
-            (),
-        ]
-
-        matched = self.tendencies
-        for keys in key_orders:
-            candidate = _filter_by_keys(self.tendencies, situation, keys)
-            if len(candidate) >= min_rows:
-                matched = candidate
-                break
-
-        return {
-            "coverage": _value_probabilities(matched, "coverage"),
-            "pressure": _value_probabilities(matched, "pressure"),
-            "box_count": _value_probabilities(matched, "box_count"),
-            "def_front": _value_probabilities(matched, "def_front"),
-        }
+        return self.lookup_with_metadata(situation, min_rows=min_rows)["tendencies"]

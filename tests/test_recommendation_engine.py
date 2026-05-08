@@ -59,6 +59,8 @@ class RecommendationEngineTests(unittest.TestCase):
         plays: list[dict[str, object]],
         **kwargs: object,
     ) -> list[dict[str, object]]:
+        intent = str(kwargs.pop("intent", "balanced"))
+        tendencies = kwargs.pop("tendencies", None)
         situation = build_situation(
             down=kwargs.pop("down", 1),
             distance=kwargs.pop("distance", 10),
@@ -69,9 +71,16 @@ class RecommendationEngineTests(unittest.TestCase):
             pressure_id=kwargs.pop("pressure_id", "none"),
             box_count=kwargs.pop("box_count", 6),
             personnel=kwargs.pop("personnel", "11"),
+            previous_gain=kwargs.pop("previous_gain", None),
         )
         self.assertFalse(kwargs)
-        return recommend_plays(pd.DataFrame(plays), situation, top_n=10)
+        return recommend_plays(
+            pd.DataFrame(plays),
+            situation,
+            top_n=10,
+            intent=intent,
+            tendencies=tendencies,
+        )
 
     def score(self, play: dict[str, object], **kwargs: object) -> dict[str, object]:
         situation = build_situation(
@@ -84,6 +93,7 @@ class RecommendationEngineTests(unittest.TestCase):
             pressure_id=kwargs.pop("pressure_id", "none"),
             box_count=kwargs.pop("box_count", 6),
             personnel=kwargs.pop("personnel", "11"),
+            previous_gain=kwargs.pop("previous_gain", None),
         )
         self.assertFalse(kwargs)
         return score_play(pd.Series(play), situation)
@@ -293,6 +303,335 @@ class RecommendationEngineTests(unittest.TestCase):
             box_count=5,
         )
         self.assertEqual(ids(recommendations)[:2], ["run", "shot"])
+
+    def test_contextual_run_scoring_avoids_flat_identical_run_ties(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="inside", play_type="run", play_family="run", run_scheme="inside_zone", pass_concept="none", tags="inside_run;zone_run", preferred_down_distance="early_down"),
+                make_play(play_id="counter", play_type="run", play_family="run", run_scheme="counter", run_modifier="gt", pass_concept="none", tags="gap_scheme", preferred_down_distance="early_down"),
+                make_play(play_id="wide", play_type="run", play_family="run", run_scheme="outside_zone", pass_concept="none", tags="perimeter_run", preferred_down_distance="early_down"),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            front_id="odd_tite",
+            box_count=7,
+            personnel="11",
+        )
+        scores = [round(float(play["score"]), 2) for play in recommendations[:3]]
+        self.assertGreater(len(set(scores)), 1)
+
+    def test_first_and_ten_without_context_does_not_make_bootleg_automatic_top_call(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="base",
+                    play_name="Stick",
+                    pass_concept="stick",
+                    tags="quick_game",
+                    preferred_down_distance="early_down",
+                ),
+                make_play(
+                    play_id="boot",
+                    play_name="PA Bootleg",
+                    pass_concept="bootleg",
+                    play_action="true",
+                    tags="play_action;bootleg;outside_zone_fake",
+                    preferred_down_distance="early_down",
+                ),
+                make_play(
+                    play_id="spacing",
+                    play_name="Spacing",
+                    pass_concept="spacing",
+                    tags="quick_game",
+                    preferred_down_distance="early_down",
+                ),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            front_id=None,
+            coverage_id=None,
+            box_count=None,
+            personnel=None,
+        )
+        self.assertEqual(ids(recommendations)[0], "base")
+        boot = next(play for play in recommendations if play["play_id"] == "boot")
+        self.assertTrue(any("guardrail: play action bootleg needs stronger run-threat context" in reason for reason in boot["reasons"]))
+
+    def test_first_and_ten_without_pressure_keeps_tunnel_screen_out_of_top_three(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="stick", pass_concept="stick", tags="quick_game", preferred_down_distance="early_down"),
+                make_play(play_id="spacing", pass_concept="spacing", tags="quick_game", preferred_down_distance="early_down"),
+                make_play(play_id="run", play_type="run", play_family="run", run_scheme="inside_zone", pass_concept="none", tags="inside_run;zone_run", preferred_down_distance="early_down"),
+                make_play(play_id="screen", play_name="WR Tunnel Screen", pass_concept="wr_tunnel_screen", tags="screen;quick_game;yac", preferred_down_distance="early_down"),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            pressure_id="none",
+        )
+        self.assertNotIn("screen", ids(recommendations)[:3])
+
+    def test_first_and_ten_rpo_competes_when_box_and_coverage_are_readable(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="run",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="inside_zone",
+                    pass_concept="none",
+                    tags="inside_run;zone_run",
+                    preferred_down_distance="early_down",
+                ),
+                make_play(
+                    play_id="boot",
+                    pass_concept="bootleg",
+                    play_action="true",
+                    tags="play_action;bootleg",
+                    preferred_down_distance="early_down",
+                ),
+                make_play(
+                    play_id="rpo",
+                    play_type="rpo",
+                    play_family="rpo",
+                    run_scheme="inside_zone",
+                    run_modifier="insert",
+                    rpo_tag="glance",
+                    pass_concept="glance",
+                    tags="rpo;quick_game;insert;conflict_defender;hot_answer",
+                    preferred_down_distance="early_down",
+                    beats_coverage="cover3",
+                    beats_box="normal_box;heavy_box",
+                ),
+                make_play(
+                    play_id="stick",
+                    pass_concept="stick",
+                    tags="quick_game",
+                    preferred_down_distance="early_down",
+                ),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            coverage_id="cover3",
+            box_count=6,
+            personnel="11",
+            tendencies={
+                "coverage": {"cover3_buzz_field": 0.55, "cover1_man_free": 0.45},
+                "pressure": {"yes": 0.2},
+                "box_count": {"6": 0.6, "7": 0.4},
+                "def_front": {"even_over": 0.5, "odd_tite": 0.5},
+            },
+        )
+        self.assertIn("rpo", ids(recommendations)[:3])
+        rpo = next(play for play in recommendations if play["play_id"] == "rpo")
+        self.assertTrue(any("1st down RPO creates conflict" in reason for reason in rpo["reasons"]))
+
+    def test_third_and_one_prefers_physical_short_yardage_runs_over_dropback(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="duo",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="duo",
+                    pass_concept="none",
+                    preferred_down_distance="third_short",
+                    tags="inside_run;gap_scheme",
+                    beats_box="heavy_box;loaded_box",
+                ),
+                make_play(
+                    play_id="insert",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="inside_zone",
+                    run_modifier="insert",
+                    pass_concept="none",
+                    preferred_down_distance="third_short",
+                    tags="inside_run;insert",
+                    beats_box="heavy_box;loaded_box",
+                ),
+                make_play(
+                    play_id="pass",
+                    pass_concept="drive",
+                    preferred_down_distance="third_short",
+                    tags="intermediate_pass",
+                ),
+            ],
+            down=3,
+            distance=1,
+            field_zone="midfield",
+            front_id="bear",
+            box_count=8,
+        )
+        self.assertEqual(ids(recommendations)[0], "duo")
+        self.assertIn(ids(recommendations)[1], {"insert", "duo"})
+
+    def test_goal_line_short_yardage_keeps_physical_runs_above_generic_quick_game(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(
+                    play_id="duo",
+                    play_type="run",
+                    play_family="run",
+                    run_scheme="duo",
+                    pass_concept="none",
+                    preferred_down_distance="third_short",
+                    preferred_field_zone="goal_line",
+                    tags="inside_run;gap_scheme",
+                ),
+                make_play(
+                    play_id="insert_rpo",
+                    play_type="rpo",
+                    play_family="rpo",
+                    run_scheme="inside_zone",
+                    run_modifier="insert",
+                    rpo_tag="quick_out",
+                    pass_concept="quick_out",
+                    preferred_down_distance="third_short",
+                    preferred_field_zone="goal_line",
+                    tags="rpo;quick_game;insert;conflict_defender;goal_line_answer",
+                ),
+                make_play(
+                    play_id="stick",
+                    pass_concept="stick",
+                    preferred_down_distance="third_short",
+                    preferred_field_zone="goal_line",
+                    tags="quick_game",
+                ),
+            ],
+            down=3,
+            distance=1,
+            field_zone="goal_line",
+            front_id="odd_tite",
+            box_count=8,
+        )
+        self.assertEqual(ids(recommendations)[0], "duo")
+        self.assertGreater(
+            next(play for play in recommendations if play["play_id"] == "duo")["score"],
+            next(play for play in recommendations if play["play_id"] == "stick")["score"],
+        )
+
+    def test_successful_previous_gain_can_raise_bootleg(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="boot", pass_concept="bootleg", play_action="true", tags="play_action;bootleg", preferred_down_distance="early_down"),
+                make_play(play_id="stick", pass_concept="stick", tags="quick_game", preferred_down_distance="early_down"),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            box_count=7,
+            coverage_id="cover3",
+            previous_gain=6,
+        )
+        self.assertEqual(ids(recommendations)[0], "boot")
+
+    def test_third_long_bootleg_is_not_top_five_without_explicit_justification(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="dagger", pass_concept="dagger", tags="intermediate_pass;attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="curl", pass_concept="curl_flat", tags="quick_game;attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="flood", pass_concept="flood", tags="attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="mesh", pass_concept="mesh", tags="quick_game;man_beater", preferred_down_distance="third_long"),
+                make_play(play_id="screen", pass_concept="rb_screen", tags="screen;anti_pressure;constraint", preferred_down_distance="third_long"),
+                make_play(play_id="boot", pass_concept="bootleg", play_action="true", tags="play_action;bootleg", preferred_down_distance="third_long"),
+            ],
+            down=3,
+            distance=10,
+            field_zone="midfield",
+            pressure_id="none",
+        )
+        self.assertNotIn("boot", ids(recommendations)[:5])
+
+    def test_second_short_shot_intent_prefers_real_shot_play(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="shot", pass_concept="yankee", play_action="true", tags="shot_play;deep_shot;play_action", preferred_down_distance="second_short"),
+                make_play(play_id="safe", pass_concept="stick", tags="quick_game", preferred_down_distance="second_short"),
+                make_play(play_id="rpo", play_type="rpo", play_family="rpo", run_scheme="inside_zone", rpo_tag="bubble", pass_concept="none", tags="rpo;quick_game", preferred_down_distance="second_short"),
+            ],
+            down=2,
+            distance=2,
+            intent="shot",
+        )
+        self.assertEqual(ids(recommendations)[0], "shot")
+
+    def test_second_short_shot_intent_avoids_stick_when_true_shots_exist(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="yankee", pass_concept="yankee", play_action="true", tags="shot_play;deep_shot;play_action", preferred_down_distance="second_short"),
+                make_play(play_id="mills", pass_concept="mills", play_action="true", tags="shot_play;deep_shot;play_action", preferred_down_distance="second_short"),
+                make_play(play_id="stick", pass_concept="stick", tags="quick_game", preferred_down_distance="second_short"),
+            ],
+            down=2,
+            distance=1,
+            intent="shot",
+        )
+        self.assertEqual(ids(recommendations)[:2], ["yankee", "mills"])
+
+    def test_second_short_safe_intent_prefers_conversion_profile(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="shot", pass_concept="yankee", play_action="true", tags="shot_play;deep_shot;play_action", preferred_down_distance="second_short"),
+                make_play(play_id="safe", pass_concept="stick", tags="quick_game", preferred_down_distance="second_short"),
+                make_play(play_id="rpo", play_type="rpo", play_family="rpo", run_scheme="inside_zone", rpo_tag="stick", pass_concept="none", tags="rpo;quick_game;insert", preferred_down_distance="second_short"),
+            ],
+            down=2,
+            distance=2,
+            intent="safe",
+        )
+        self.assertIn(ids(recommendations)[0], {"safe", "rpo"})
+        self.assertGreater(
+            next(play for play in recommendations if play["play_id"] == "safe")["score"],
+            next(play for play in recommendations if play["play_id"] == "shot")["score"],
+        )
+
+    def test_second_short_safe_intent_keeps_physical_run_above_deep_shot(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="shot", pass_concept="mills", play_action="true", tags="shot_play;deep_shot;play_action", preferred_down_distance="second_short"),
+                make_play(play_id="duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", tags="inside_run;gap_scheme", preferred_down_distance="second_short"),
+                make_play(play_id="rpo", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", tags="rpo;quick_game;conflict_defender", preferred_down_distance="second_short"),
+            ],
+            down=2,
+            distance=1,
+            intent="safe",
+            box_count=8,
+            front_id="bear",
+        )
+        self.assertIn(ids(recommendations)[0], {"duo", "rpo"})
+
+    def test_third_long_without_pressure_keeps_rb_screen_below_real_conversion_calls(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="dagger", pass_concept="dagger", tags="intermediate_pass;attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="flood", pass_concept="flood", tags="attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="curl", pass_concept="curl_flat", tags="quick_game;attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="screen", pass_concept="rb_screen", tags="screen;anti_pressure;constraint", preferred_down_distance="third_long"),
+            ],
+            down=3,
+            distance=10,
+            pressure_id="none",
+        )
+        self.assertLess(ids(recommendations).index("screen"), len(recommendations))
+        self.assertNotIn("screen", ids(recommendations)[:3])
+
+    def test_third_long_with_pressure_can_keep_screen_viable(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="dagger", pass_concept="dagger", tags="intermediate_pass;attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="curl", pass_concept="curl_flat", tags="quick_game;attacks_sticks", preferred_down_distance="third_long"),
+                make_play(play_id="screen", pass_concept="rb_screen", beats_pressure="nickel_blitz;any_pressure", tags="screen;anti_pressure;pressure_beater;constraint", preferred_down_distance="third_long"),
+            ],
+            down=3,
+            distance=10,
+            pressure_id="nickel_blitz",
+        )
+        self.assertIn("screen", ids(recommendations)[:3])
 
     def test_reasons_are_explainable(self) -> None:
         scored = self.score(

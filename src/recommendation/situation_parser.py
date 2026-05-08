@@ -90,6 +90,9 @@ DEFENSIVE_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "pressure_id": (
         ("pressure none", "none"),
+        ("pressure no", "none"),
+        ("pressure yes", "any_pressure"),
+        ("any pressure", "any_pressure"),
         ("no pressure", "none"),
         ("double a gap", "double_a_gap"),
         ("nickel blitz", "nickel_blitz"),

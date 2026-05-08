@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,6 +21,86 @@ from recommendation.engine import build_situation, recommend_plays
 
 
 SAMPLE_TENDENCIES_PATH = PROJECT_ROOT / "data" / "opponent_tendencies.csv"
+
+
+def make_rich_tendency_rows() -> list[dict[str, object]]:
+    """Build a tiny rich-schema dataset for explicit personnel tests."""
+    base = {
+        "team": "Rhinos",
+        "game_id": "game",
+        "field_zone": "open_field",
+        "hash": "middle",
+        "offensive_formation_id": "gun_11_2x2",
+        "defensive_personnel_id": "nickel",
+        "movement_type": "none",
+        "success_rate_allowed": 0.45,
+        "epa_allowed": -0.01,
+        "notes": "sample",
+    }
+    return [
+        {
+            **base,
+            "game_id": "g1",
+            "down": 2,
+            "distance": "short",
+            "offensive_personnel": "10",
+            "front_id": "odd_tite",
+            "box_count": 7,
+            "coverage_id": "cover3_buzz_field",
+            "blitzers": 1,
+            "sample_size": 12,
+            "frequency": 1.0,
+        },
+        {
+            **base,
+            "game_id": "g2",
+            "down": 2,
+            "distance": "short",
+            "offensive_personnel": "11",
+            "front_id": "bear",
+            "box_count": 8,
+            "coverage_id": "cover1_man_free",
+            "blitzers": 0,
+            "sample_size": 12,
+            "frequency": 1.0,
+        },
+        {
+            **base,
+            "game_id": "g3",
+            "down": 2,
+            "distance": "short",
+            "offensive_personnel": "11",
+            "front_id": "bear",
+            "box_count": 8,
+            "coverage_id": "cover1_man_free",
+            "blitzers": 0,
+            "sample_size": 6,
+            "frequency": 1.0,
+        },
+        {
+            **base,
+            "game_id": "g4",
+            "down": 2,
+            "distance": "short",
+            "offensive_personnel": "12",
+            "front_id": "even_over",
+            "box_count": 6,
+            "coverage_id": "cover2",
+            "blitzers": 0,
+            "sample_size": 4,
+            "frequency": 1.0,
+        },
+    ]
+
+
+def write_rich_tendency_csv(rows: list[dict[str, object]]) -> Path:
+    """Write a temp rich-schema tendency CSV and return its path."""
+    dataframe = pd.DataFrame(rows)
+    handle = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False)
+    path = Path(handle.name)
+    handle.close()
+    dataframe.to_csv(path, index=False)
+    return path
 
 
 def make_playbook() -> pd.DataFrame:
@@ -139,7 +220,7 @@ class OpponentTendencyTests(unittest.TestCase):
 
     def test_analyzer_returns_expected_probabilities_for_exact_situation(self) -> None:
         analyzer = OpponentTendencyAnalyzer.from_csv(SAMPLE_TENDENCIES_PATH)
-        result = analyzer.lookup(
+        result = analyzer.lookup_with_metadata(
             {
                 "opponent": "rhinos",
                 "down": 2,
@@ -149,17 +230,30 @@ class OpponentTendencyTests(unittest.TestCase):
             }
         )
 
+        self.assertFalse(result["fallback_used"])
         self.assertEqual(
-            set(result["coverage"]),
-            {"cover3_buzz_field", "cover1_man_free"},
+            result["matched_keys"],
+            ("opponent", "down", "distance_bucket", "field_zone", "personnel"),
         )
-        self.assertAlmostEqual(result["coverage"]["cover3_buzz_field"], 7 / 12)
-        self.assertAlmostEqual(result["coverage"]["cover1_man_free"], 5 / 12)
-        self.assertNotIn("cover3", result["coverage"])
-        self.assertNotIn("cover1", result["coverage"])
-        self.assertEqual(result["pressure"]["yes"], 1.0)
-        self.assertAlmostEqual(result["box_count"]["8"], 2 / 3)
-        self.assertEqual(result["def_front"]["odd_tite"], 1.0)
+        tendencies = result["tendencies"]
+        self.assertEqual(
+            set(tendencies["coverage"]),
+            {
+                "cover3_buzz_field",
+                "cover1_man_free",
+                "cover1_robber_strong",
+                "cover0_pressure",
+            },
+        )
+        self.assertAlmostEqual(tendencies["coverage"]["cover1_man_free"], 4 / 12)
+        self.assertAlmostEqual(tendencies["coverage"]["cover3_buzz_field"], 4 / 12)
+        self.assertAlmostEqual(tendencies["coverage"]["cover1_robber_strong"], 3 / 12)
+        self.assertAlmostEqual(tendencies["coverage"]["cover0_pressure"], 1 / 12)
+        self.assertNotIn("cover3", tendencies["coverage"])
+        self.assertNotIn("cover1", tendencies["coverage"])
+        self.assertAlmostEqual(tendencies["pressure"]["yes"], 1.0)
+        self.assertAlmostEqual(tendencies["box_count"]["8"], 7 / 12)
+        self.assertAlmostEqual(tendencies["def_front"]["bear"], 4 / 12)
 
     def test_same_situation_changes_ranking_when_tendencies_are_added(self) -> None:
         playbook = make_playbook()
@@ -266,6 +360,90 @@ class OpponentTendencyTests(unittest.TestCase):
                 for reason in inside_zone["reasons"]
             )
         )
+
+    def test_personnel_buckets_can_return_different_snapshots(self) -> None:
+        path = write_rich_tendency_csv(make_rich_tendency_rows())
+        self.addCleanup(path.unlink)
+        analyzer = OpponentTendencyAnalyzer.from_csv(path)
+
+        ten = analyzer.lookup_with_metadata(
+            {
+                "opponent": "rhinos",
+                "down": 2,
+                "distance_bucket": "short",
+                "field_zone": "open_field",
+                "personnel": "10",
+            }
+        )
+        eleven = analyzer.lookup_with_metadata(
+            {
+                "opponent": "rhinos",
+                "down": 2,
+                "distance_bucket": "short",
+                "field_zone": "open_field",
+                "personnel": "11",
+            }
+        )
+
+        self.assertNotEqual(ten["tendencies"]["coverage"], eleven["tendencies"]["coverage"])
+        self.assertEqual(ten["matched_keys"], ("opponent", "down", "distance_bucket", "field_zone", "personnel"))
+        self.assertEqual(eleven["matched_keys"], ("opponent", "down", "distance_bucket", "field_zone", "personnel"))
+
+    def test_exact_personnel_rows_are_used_when_present(self) -> None:
+        path = write_rich_tendency_csv(make_rich_tendency_rows())
+        self.addCleanup(path.unlink)
+        analyzer = OpponentTendencyAnalyzer.from_csv(path)
+
+        result = analyzer.lookup_with_metadata(
+            {
+                "opponent": "rhinos",
+                "down": 2,
+                "distance_bucket": "short",
+                "field_zone": "open_field",
+                "personnel": "11",
+            }
+        )
+
+        self.assertFalse(result["fallback_used"])
+        self.assertEqual(result["matched_row_count"], 2)
+        self.assertGreater(result["tendencies"]["coverage"]["cover1_man_free"], 0.99)
+
+    def test_personnel_fallback_is_explicit_when_exact_bucket_missing(self) -> None:
+        path = write_rich_tendency_csv(make_rich_tendency_rows())
+        self.addCleanup(path.unlink)
+        analyzer = OpponentTendencyAnalyzer.from_csv(path)
+
+        result = analyzer.lookup_with_metadata(
+            {
+                "opponent": "rhinos",
+                "down": 2,
+                "distance_bucket": "short",
+                "field_zone": "open_field",
+                "personnel": "21",
+            }
+        )
+
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual(result["matched_keys"], ("opponent", "down", "distance_bucket", "field_zone"))
+        self.assertEqual(result["matched_row_count"], 4)
+
+    def test_lookup_without_personnel_is_not_marked_personnel_specific(self) -> None:
+        path = write_rich_tendency_csv(make_rich_tendency_rows())
+        self.addCleanup(path.unlink)
+        analyzer = OpponentTendencyAnalyzer.from_csv(path)
+
+        result = analyzer.lookup_with_metadata(
+            {
+                "opponent": "rhinos",
+                "down": 2,
+                "distance_bucket": "short",
+                "field_zone": "open_field",
+            }
+        )
+
+        self.assertFalse(result["fallback_used"])
+        self.assertNotIn("personnel", result["matched_keys"])
+        self.assertEqual(result["matched_keys"], ("opponent", "down", "distance_bucket", "field_zone"))
 
 
 if __name__ == "__main__":

@@ -145,3 +145,15 @@ def test_parse_defense_update_odd_tite_box_7_personnel_12() -> None:
         box_count=7,
         personnel="12",
     )
+
+
+def test_parse_defense_update_pressure_yes_maps_to_generic_pressure() -> None:
+    updated = parse_defense_update("bear pressure yes box 8 personnel 11")
+
+    assert updated == DefenseState(
+        front_id="bear",
+        coverage_id="none",
+        pressure_id="any_pressure",
+        box_count=8,
+        personnel="11",
+    )
