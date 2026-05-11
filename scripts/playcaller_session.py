@@ -21,7 +21,16 @@ if str(BASE_DIR / "src") not in sys.path:
     sys.path.insert(0, str(BASE_DIR / "src"))
 
 from opponent.tendencies import OpponentTendencyAnalyzer
-from recommendation import build_situation, recommend_plays
+from recommendation.engine import (
+    build_situation,
+    concept_group_key,
+    formation_similarity_key,
+    infer_play_tags,
+    is_physical_run_play,
+    is_short_yardage_run,
+    is_true_screen_play,
+    recommend_plays,
+)
 from recommendation.game_state import DefenseState, GameState
 from recommendation.situation_parser import (
     parse_defense_update,
@@ -40,6 +49,8 @@ class BlockSpec:
     labels: frozenset[str]
     intent: str = "balanced"
     fallback_labels: frozenset[str] = frozenset()
+    exclude_labels: frozenset[str] = frozenset()
+    allow_any: bool = False
 
 
 @dataclass
@@ -103,7 +114,7 @@ def parse_args() -> argparse.Namespace:
         dest="opponent_tendencies_path",
     )
     parser.add_argument("--top-n", type=positive_int, default=3, dest="top_n")
-    parser.add_argument("--block-size", type=positive_int, default=3, dest="block_size")
+    parser.add_argument("--block-size", type=positive_int, default=2, dest="block_size")
     parser.add_argument("--opponent")
     parser.add_argument(
         "--intent",
@@ -274,12 +285,18 @@ def build_recommendation_groups(
     """Build situational recommendation blocks or a fallback unified list."""
     block_specs = choose_output_blocks(situation)
     effective_block_size = top_n if block_size is None else block_size
+    requested_personnel = normalize_text(situation.get("personnel")).lower()
+    filtered_playbook = playbook
+    if requested_personnel:
+        filtered_playbook = playbook[
+            playbook["personnel"].astype(str).str.strip().str.lower() == requested_personnel
+        ].copy()
     if not block_specs:
         return [
             (
                 f"Top {top_n} recommended plays:",
                 recommend_plays(
-                    playbook,
+                    filtered_playbook,
                     situation,
                     tendencies=tendencies,
                     top_n=top_n,
@@ -288,11 +305,11 @@ def build_recommendation_groups(
             )
         ]
 
-    play_rows = load_play_rows(playbook)
+    play_rows = load_play_rows(filtered_playbook)
     pool_size = max(top_n * 8, effective_block_size * 8, 36)
     candidate_pools = {
         pool_intent: recommend_plays(
-            playbook,
+            filtered_playbook,
             situation,
             tendencies=tendencies,
             top_n=pool_size,
@@ -315,14 +332,14 @@ def build_recommendation_groups(
             groups.append((spec.title, candidates))
             used_play_ids.update(str(play["play_id"]) for play in candidates)
 
-    if groups:
+    if groups and len(groups) >= min(2, len(block_specs)):
         return groups
 
     return [
         (
             f"Top {top_n} recommended plays:",
             recommend_plays(
-                playbook,
+                filtered_playbook,
                 situation,
                 tendencies=tendencies,
                 top_n=top_n,
@@ -355,123 +372,66 @@ def load_play_rows(playbook: pd.DataFrame) -> dict[str, dict[str, object]]:
 
 def classify_play(play: Mapping[str, object]) -> set[str]:
     """Classify a play into coordinator-friendly football buckets."""
+    play_series = pd.Series(play)
+    tags = infer_play_tags(play_series)
     labels: set[str] = set()
-    tags = parse_labels(play.get("tags", ""))
-    preferred_dd = parse_labels(play.get("preferred_down_distance", ""))
-    preferred_zones = parse_labels(play.get("preferred_field_zone", ""))
     play_type = row_value(play, "play_type")
-    play_family = row_value(play, "play_family")
-    run_scheme = row_value(play, "run_scheme")
-    run_modifier = row_value(play, "run_modifier")
     pass_concept = row_value(play, "pass_concept")
-    pass_modifier = row_value(play, "pass_modifier")
     rpo_tag = row_value(play, "rpo_tag")
-    beats_pressure = parse_labels(play.get("beats_pressure", ""))
-    play_action = row_value(play, "play_action") == "true"
-    formation_id = row_value(play, "formation_id")
-    personnel = row_value(play, "personnel")
-
-    shot_concepts = {
-        "four_verts",
-        "verts",
-        "yankee",
-        "mills",
-        "dagger",
-        "y_cross",
-        "post",
-        "go",
-        "seams",
-    }
-    quick_concepts = {
-        "stick",
-        "hitch",
-        "slant_flat",
-        "curl_flat",
-        "spacing",
-        "mesh",
-        "snag",
-        "beamer",
-        "quick_out",
-        "glance",
-    }
-    physical_short_run_schemes = {"duo", "inside_zone", "power", "counter", "trap"}
-    perimeter_schemes = {"outside_zone", "wide_zone", "pin_pull", "jet", "toss", "sweep"}
+    true_screen = is_true_screen_play(play_series, tags)
 
     if play_type == "run":
         labels.add("run")
     if play_type == "rpo":
-        labels.update({"rpo", "run_threat"})
-    if play_type == "pass" and not play_action:
-        labels.add("dropback_pass")
-    if play_action:
-        labels.add("play_action")
-    if "screen" in tags or play_family == "screen" or "screen" in pass_concept or "screen" in pass_modifier:
-        labels.update({"screen", "constraint_call"})
-    if (
-        "deep_shot" in tags
-        or "shot_play" in tags
-        or "explosive" in tags
-        or pass_concept in shot_concepts
-        or pass_modifier == "deep_shot"
-    ):
-        labels.add("shot")
-    if "quick_game" in tags or pass_concept in quick_concepts or rpo_tag in quick_concepts:
-        labels.add("quick_game")
-    if (
-        (play_type in {"run", "rpo"})
-        and (
-            run_scheme in physical_short_run_schemes
-            or run_modifier in {"insert", "split_zone", "gt", "gy"}
-            or {"inside_run", "gap_scheme", "insert", "split_zone"} & tags
-        )
-        and not (play_type == "rpo" and rpo_tag in {"bubble", "now"})
-        and run_scheme not in perimeter_schemes
-    ):
-        labels.add("short_yardage_run")
-    if play_type == "run" and (
-        "short_yardage_run" in labels or run_scheme in physical_short_run_schemes or {"inside_run", "gap_scheme"} & tags
-    ):
-        labels.add("physical_run")
-    if run_scheme in perimeter_schemes or {"perimeter_run", "outside_run", "space_play"} & tags:
-        labels.add("perimeter_run")
-    if (
-        "pressure_beater" in tags
-        or "blitz_beater" in tags
-        or "anti_pressure" in tags
-        or "hot_answer" in tags
-        or beats_pressure - {"none"}
-    ):
-        labels.add("pressure_answer")
-    if {"redzone", "red_zone"} & tags or preferred_zones & {"redzone", "goal_line"}:
-        labels.add("red_zone_answer")
-    if "goal_line" in tags or preferred_zones & {"goal_line"}:
-        labels.add("goal_line_answer")
-    if (
-        "short_yardage_run" in labels
-        or "quick_game" in labels
-        or (play_type == "rpo" and rpo_tag in {"glance", "quick_out", "hitch", "stick", "bubble", "now", "double_slant", "go_out"})
-        or pass_concept in {"stick", "hitch", "slant_flat", "curl_flat", "spacing", "mesh", "beamer", "glance"}
-    ):
-        labels.add("safe_conversion")
-    if "constraint_call" in labels or "screen" in labels or "play_action" in labels:
-        labels.add("constraint_call")
-    if "man_beater" in tags or pass_concept in {"mesh", "option", "choice", "beamer"}:
-        labels.add("man_beater")
-    if pass_concept in {"spacing", "curl_flat", "flood", "snag", "stick", "y_cross"}:
-        labels.add("zone_beater")
-    if play_type == "rpo" and (
-        {"conflict_defender", "hot_answer"} & tags
-        or rpo_tag in {"glance", "quick_out", "hitch", "stick", "bubble", "now", "double_slant", "go_out"}
-    ):
-        labels.add("rpo_conflict")
-    if play_type == "pass" and "screen" not in labels:
+        labels.add("rpo")
+    if play_type == "pass" and not true_screen:
         labels.add("pass")
-    if formation_id and any(token in formation_id for token in {"bunch", "wing", "te_on", "te_attached", "2te", "condensed"}):
-        labels.add("condensed_surface")
-    if personnel == "12":
-        labels.add("heavy_personnel")
-    if preferred_dd & {"third_short", "fourth_short", "second_short"}:
-        labels.add("short_yardage_call")
+    if true_screen:
+        labels.update({"screen", "constraint_screen"})
+    if {"shot_play", "deep_pass", "vertical_pass", "explosive", "play_action_shot"} & tags:
+        labels.add("shot")
+    if {"quick_game", "quick_access", "access_throw"} & tags:
+        labels.update({"quick_answer", "quick_game"})
+    if "safe_conversion" in tags:
+        labels.add("safe_conversion")
+    if is_short_yardage_run(play_series, tags):
+        labels.add("short_yardage_run")
+    if play_type == "run" and is_physical_run_play(play_series, tags):
+        labels.add("physical_run")
+    if play_type == "run" and "perimeter_run" in tags:
+        labels.add("perimeter_run")
+    if {"pressure_answer", "anti_pressure", "pressure_beater", "blitz_beater"} & tags:
+        labels.add("pressure_answer")
+    if "red_zone_answer" in tags:
+        labels.add("red_zone_answer")
+    if "goal_line_answer" in tags:
+        labels.add("goal_line_answer")
+    if "constraint_call" in tags or true_screen:
+        labels.add("constraint_call")
+    if "man_beater" in tags:
+        labels.add("man_beater")
+    if "zone_beater" in tags:
+        labels.add("zone_beater")
+    if "intermediate_passing_concept" in tags or "third_medium_answer" in tags:
+        labels.add("intermediate_conversion")
+    if "third_long_answer" in tags or {"deep_pass", "vertical_pass"} & tags:
+        labels.add("third_long_conversion")
+    if play_type == "rpo" and "conflict_call" in tags:
+        labels.add("rpo_conflict")
+    if play_type == "rpo" and rpo_tag in {"bubble", "now"}:
+        labels.add("access_rpo")
+    if play_type == "pass" and "goal_line_answer" in tags and not true_screen and "shot" not in labels:
+        labels.add("goal_line_pass")
+    if play_type == "run" and "goal_line_answer" in tags:
+        labels.add("goal_line_run")
+    if "safe_conversion" in tags and ("quick_answer" in labels or "red_zone_answer" in labels):
+        labels.add("quick_safe")
+    if "man_beater" in tags and ("quick_answer" in labels or "safe_conversion" in tags):
+        labels.add("quick_man_beater")
+    if play_type == "pass" and not true_screen:
+        labels.add("pass")
+    if pass_concept == "go_out":
+        labels.update({"goal_line_pass", "quick_man_beater", "safe_conversion"})
 
     return labels
 
@@ -482,14 +442,18 @@ def choose_output_blocks(situation: Mapping[str, object]) -> list[BlockSpec]:
     distance = int(situation["distance"]) if isinstance(situation["distance"], int) else int(str(situation["distance"]))
     tag = normalize_text(situation.get("down_distance_tag"))
     field_zone = normalize_text(situation.get("field_zone"))
-    pressure_id = normalize_text(situation.get("pressure_id"))
-    pressure_block_labels = frozenset({"pressure_answer", "quick_game", "man_beater"})
+    pressure_block_labels = frozenset({"pressure_answer", "quick_answer", "man_beater"})
 
-    if field_zone in {"redzone", "goal_line"} and distance <= 3:
+    if field_zone == "goal_line":
         return [
-            BlockSpec("Physical run options:", frozenset({"physical_run"}), fallback_labels=frozenset({"run"})),
-            BlockSpec("RPO / quick answer options:", frozenset({"rpo", "quick_game", "safe_conversion"}), fallback_labels=frozenset({"man_beater"})),
-            BlockSpec("Man-pressure answers:", frozenset({"man_beater", "pressure_answer"}), fallback_labels=pressure_block_labels),
+            BlockSpec("Physical run options:", frozenset({"goal_line_run", "physical_run", "short_yardage_run"}), fallback_labels=frozenset({"run"})),
+            BlockSpec("Goal-line pass answers:", frozenset({"goal_line_pass", "quick_man_beater", "safe_conversion"}), fallback_labels=frozenset({"man_beater"}), exclude_labels=frozenset({"rpo", "screen", "shot"})),
+        ]
+    if field_zone in {"redzone", "high_redzone"}:
+        return [
+            BlockSpec("Quick / safe answers:", frozenset({"quick_safe", "quick_answer", "safe_conversion"}), fallback_labels=frozenset({"pass"}), exclude_labels=frozenset({"shot", "screen"})),
+            BlockSpec("Man-beater answers:", frozenset({"man_beater", "quick_man_beater"}), fallback_labels=frozenset({"pass"}), exclude_labels=frozenset({"shot", "screen"})),
+            BlockSpec("Run / physical answers:", frozenset({"goal_line_run", "physical_run", "run"}), fallback_labels=frozenset({"safe_conversion"}), exclude_labels=frozenset({"screen"})),
         ]
     if down == 1 and distance == 10:
         return [
@@ -511,27 +475,27 @@ def choose_output_blocks(situation: Mapping[str, object]) -> list[BlockSpec]:
         ]
     if tag == "second_long":
         return [
-            BlockSpec("Conversion pass options:", frozenset({"pass", "dropback_pass", "shot"})),
+            BlockSpec("Conversion pass options:", frozenset({"intermediate_conversion", "pass", "safe_conversion"}), fallback_labels=frozenset({"shot"}), exclude_labels=frozenset({"screen"})),
             BlockSpec("Pressure answers:", pressure_block_labels),
-            BlockSpec("Constraint / screen / draw options:", frozenset({"screen", "constraint_call"})),
+            BlockSpec("Constraint / screen options:", frozenset({"screen", "constraint_call"}), exclude_labels=frozenset({"access_rpo"})),
         ]
     if tag in {"third_short", "fourth_short"}:
         return [
-            BlockSpec("Physical run options:", frozenset({"physical_run"}), fallback_labels=frozenset({"run"})),
-            BlockSpec("RPO / quick answer options:", frozenset({"rpo", "quick_game", "safe_conversion"})),
-            BlockSpec("Man-pressure answers:", frozenset({"man_beater", "pressure_answer"}), fallback_labels=pressure_block_labels if pressure_id else frozenset({"man_beater"})),
+            BlockSpec("Physical run options:", frozenset({"physical_run", "short_yardage_run", "goal_line_run"}), fallback_labels=frozenset({"run"}), exclude_labels=frozenset({"perimeter_run"})),
+            BlockSpec("Quick / man-beater answers:", frozenset({"quick_man_beater", "quick_answer", "man_beater", "safe_conversion"}), fallback_labels=frozenset({"pass"}), exclude_labels=frozenset({"shot", "screen"})),
+            BlockSpec("Best tendency answers:", frozenset(), fallback_labels=frozenset(), allow_any=True),
         ]
     if tag in {"third_medium", "fourth_medium"}:
         return [
-            BlockSpec("Conversion pass options:", frozenset({"pass", "dropback_pass", "safe_conversion"})),
-            BlockSpec("RPO / quick answers:", frozenset({"rpo", "quick_game", "safe_conversion"})),
-            BlockSpec("Pressure answers:", pressure_block_labels),
+            BlockSpec("Intermediate conversion options:", frozenset({"intermediate_conversion", "safe_conversion", "quick_answer"}), fallback_labels=frozenset({"pass"}), exclude_labels=frozenset({"shot"})),
+            BlockSpec("Man / pressure answers:", frozenset({"man_beater", "pressure_answer", "quick_man_beater"}), fallback_labels=pressure_block_labels, exclude_labels=frozenset({"shot"})),
+            BlockSpec("Best tendency answers:", frozenset(), fallback_labels=frozenset(), allow_any=True),
         ]
     if tag in {"third_long", "fourth_long"}:
         return [
-            BlockSpec("Conversion pass options:", frozenset({"pass", "dropback_pass", "shot"})),
+            BlockSpec("Third-long conversion options:", frozenset({"third_long_conversion", "intermediate_conversion", "shot"}), fallback_labels=frozenset({"pass"}), exclude_labels=frozenset({"access_rpo"})),
             BlockSpec("Pressure answers:", pressure_block_labels),
-            BlockSpec("Constraint / screen options:", frozenset({"screen", "constraint_call"})),
+            BlockSpec("Constraint / screen options:", frozenset({"screen", "constraint_call"}), exclude_labels=frozenset({"access_rpo"})),
         ]
     return []
 
@@ -548,7 +512,72 @@ def block_match_strength(labels: set[str], spec: BlockSpec) -> int:
         strength += 3
     if "pressure_answer" in labels and "Pressure" in spec.title:
         strength += 3
+    if "intermediate_conversion" in labels and "Intermediate" in spec.title:
+        strength += 4
+    if "third_long_conversion" in labels and "Third-long" in spec.title:
+        strength += 4
+    if "goal_line_pass" in labels and "Goal-line" in spec.title:
+        strength += 4
     return strength
+
+
+def candidate_matches_block(
+    candidate: Mapping[str, object],
+    spec: BlockSpec,
+    labels: set[str],
+) -> bool:
+    """Return whether a ranked candidate fits the requested block."""
+    if spec.exclude_labels and labels & set(spec.exclude_labels):
+        return False
+    if spec.allow_any:
+        return True
+    if labels & set(spec.labels):
+        return True
+    if spec.fallback_labels and labels & set(spec.fallback_labels):
+        return True
+    return False
+
+
+def apply_block_diversity(
+    entries: list[tuple[Mapping[str, object], Mapping[str, object], set[str], int]],
+    *,
+    block_size: int,
+    used_play_ids: set[str],
+) -> list[Mapping[str, object]]:
+    """Select a compact block while relaxing diversity only when needed."""
+    phases = [
+        {"allow_used": False, "allow_same_concept": False, "allow_same_formation": False},
+        {"allow_used": False, "allow_same_concept": False, "allow_same_formation": True},
+        {"allow_used": False, "allow_same_concept": True, "allow_same_formation": True},
+        {"allow_used": True, "allow_same_concept": True, "allow_same_formation": True},
+    ]
+    selected: list[Mapping[str, object]] = []
+    selected_ids: set[str] = set()
+    selected_concepts: set[str] = set()
+    selected_formations: set[str] = set()
+
+    for rules in phases:
+        for candidate, play_row, _, _ in entries:
+            play_id = str(candidate.get("play_id", ""))
+            if not play_id or play_id in selected_ids:
+                continue
+            if not rules["allow_used"] and play_id in used_play_ids:
+                continue
+            play_series = pd.Series(play_row)
+            concept_key = concept_group_key(play_series)
+            formation_key = formation_similarity_key(play_series) or row_value(play_row, "formation_id")
+            if not rules["allow_same_concept"] and concept_key in selected_concepts:
+                continue
+            if not rules["allow_same_formation"] and formation_key and formation_key in selected_formations:
+                continue
+            selected.append(candidate)
+            selected_ids.add(play_id)
+            selected_concepts.add(concept_key)
+            if formation_key:
+                selected_formations.add(formation_key)
+            if len(selected) >= block_size:
+                return selected
+    return selected
 
 
 def filter_candidates_for_block(
@@ -560,40 +589,31 @@ def filter_candidates_for_block(
     used_play_ids: set[str],
 ) -> list[Mapping[str, object]]:
     """Filter a ranked candidate pool down to one compact output block."""
-    matches: list[tuple[Mapping[str, object], set[str], int]] = []
-    fallbacks: list[tuple[Mapping[str, object], set[str], int]] = []
+    matches: list[tuple[Mapping[str, object], Mapping[str, object], set[str], int]] = []
+    fallbacks: list[tuple[Mapping[str, object], Mapping[str, object], set[str], int]] = []
     used_seen: set[str] = set()
 
     for candidate in candidates:
         play_id = str(candidate.get("play_id", ""))
         if not play_id or play_id in used_seen:
             continue
-        labels = classify_play(play_rows.get(play_id, candidate))
+        play_row = play_rows.get(play_id, candidate)
+        labels = classify_play(play_row)
         strength = block_match_strength(labels, spec)
-        if labels & set(spec.labels):
-            matches.append((candidate, labels, strength))
-            used_seen.add(play_id)
-        elif spec.fallback_labels and labels & set(spec.fallback_labels):
-            fallbacks.append((candidate, labels, strength))
+        if candidate_matches_block(candidate, spec, labels):
+            if spec.allow_any or labels & set(spec.labels):
+                matches.append((candidate, play_row, labels, strength))
+            else:
+                fallbacks.append((candidate, play_row, labels, strength))
             used_seen.add(play_id)
 
-    ordered = sorted(matches, key=lambda item: (-item[2], -float(item[0]["score"])))
-    fallback_ordered = sorted(fallbacks, key=lambda item: (-item[2], -float(item[0]["score"])))
-
-    selected: list[Mapping[str, object]] = []
-    selected_ids: set[str] = set()
-    for pool, allow_duplicates in ((ordered, False), (fallback_ordered, False), (ordered, True), (fallback_ordered, True)):
-        for candidate, _, _ in pool:
-            play_id = str(candidate["play_id"])
-            if play_id in selected_ids:
-                continue
-            if not allow_duplicates and play_id in used_play_ids:
-                continue
-            selected.append(candidate)
-            selected_ids.add(play_id)
-            if len(selected) >= block_size:
-                return selected
-    return selected
+    ordered = sorted(matches, key=lambda item: (-item[3], -float(item[0]["score"])))
+    fallback_ordered = sorted(fallbacks, key=lambda item: (-item[3], -float(item[0]["score"])))
+    return apply_block_diversity(
+        [*ordered, *fallback_ordered],
+        block_size=block_size,
+        used_play_ids=used_play_ids,
+    )
 
 
 def print_recommendations_for_state(

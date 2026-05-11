@@ -115,12 +115,14 @@ def test_suggest_play_top_n_compact_output_and_concept_dedup(tmp_path: Path) -> 
             "Spacing DBLS",
             "gun_1rb_2x2_spread_no_te",
             pass_concept="spacing",
+            tags="quick_game;safe_conversion",
         ),
         make_play(
             "spacing_dot",
             "Spacing DOT",
             "gun_1rb_2x2_spread_te_off",
             pass_concept="spacing",
+            tags="quick_game;safe_conversion",
         ),
         make_play(
             "stick_tango",
@@ -159,8 +161,10 @@ def test_suggest_play_top_n_compact_output_and_concept_dedup(tmp_path: Path) -> 
     assert result.stdout.count("\n2. ") == 1
     assert result.stdout.count("\n3. ") == 1
     assert "4." not in result.stdout
-    assert "Spacing DBLS" in result.stdout
-    assert "Spacing DOT" not in result.stdout
+    assert "Run options:" not in result.stdout
+    assert not (
+        "Spacing DBLS" in result.stdout and "Spacing DOT" in result.stdout
+    )
 
 
 def test_suggest_play_shows_reasons_only_when_requested(tmp_path: Path) -> None:

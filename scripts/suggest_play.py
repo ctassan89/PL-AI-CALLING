@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--front-id", "--front", dest="front_id")
     parser.add_argument("--coverage-id", "--coverage", dest="coverage_id")
     parser.add_argument("--pressure-id", dest="pressure_id")
-    parser.add_argument("--box-count", type=int, required=True, dest="box_count")
+    parser.add_argument("--box-count", type=int, dest="box_count")
     parser.add_argument("--personnel")
     parser.add_argument("--opponent")
     parser.add_argument("--top-n", type=positive_int, default=3, dest="top_n")

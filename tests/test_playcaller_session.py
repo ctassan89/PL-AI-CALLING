@@ -176,10 +176,10 @@ def test_session_top_n_controls_number_of_recommendations(tmp_path: Path) -> Non
     result = run_session(playbook_path, "third and 6 midfield\nq\n", "--top-n", "2")
 
     assert result.returncode == 0
-    assert "Conversion pass options:" in result.stdout
-    assert "Pressure answers:" in result.stdout
+    assert "Intermediate conversion options:" in result.stdout
+    assert "Man / pressure answers:" in result.stdout
     assert "Top 2 recommended plays:" not in result.stdout
-    assert result.stdout.count("Conversion pass options:") == 1
+    assert result.stdout.count("Intermediate conversion options:") == 1
 
 
 def test_session_touchdown_stops_before_rendering_next_block(tmp_path: Path) -> None:
@@ -207,9 +207,9 @@ def test_session_first_and_ten_uses_run_rpo_pass_blocks(tmp_path: Path) -> None:
         playbook_path,
         list(PLAYBOOK_COLUMNS),
         [
-            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", tags="inside_run;gap_scheme"),
-            make_play("rpo", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", tags="rpo;quick_game;conflict_defender;hot_answer"),
-            make_play("pass", "Stick TRIPS", pass_concept="stick", tags="quick_game"),
+            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", personnel="11", tags="inside_run;gap_scheme;physical_run;short_yardage_run"),
+            make_play("rpo", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion"),
+            make_play("pass", "Stick TRIPS", pass_concept="stick", personnel="11", tags="quick_game;safe_conversion"),
         ],
     )
 
@@ -228,9 +228,9 @@ def test_session_second_short_uses_shot_safe_rpo_blocks(tmp_path: Path) -> None:
         playbook_path,
         list(PLAYBOOK_COLUMNS),
         [
-            make_play("shot", "Yankee", pass_concept="yankee", play_action="true", preferred_down_distance="second_short", tags="shot_play;deep_shot;play_action"),
-            make_play("safe", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", preferred_down_distance="second_short", tags="inside_run;gap_scheme"),
-            make_play("rpo", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", preferred_down_distance="second_short", tags="rpo;quick_game;insert;conflict_defender"),
+            make_play("shot", "Yankee", pass_concept="yankee", play_action="true", preferred_down_distance="second_short", personnel="11", tags="shot_play;deep_pass;explosive;play_action;play_action_shot"),
+            make_play("safe", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", preferred_down_distance="second_short", personnel="11", tags="inside_run;gap_scheme;physical_run;short_yardage_run;safe_conversion"),
+            make_play("rpo", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", preferred_down_distance="second_short", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion;quick_access;access_throw"),
         ],
     )
 
@@ -246,10 +246,10 @@ def test_session_avoids_duplicate_play_ids_across_blocks_when_possible() -> None
     """Block rendering should avoid reusing the same play across blocks when depth exists."""
     playbook = pd.DataFrame(
         [
-            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", tags="inside_run;gap_scheme"),
-            make_play("rpo1", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", tags="rpo;quick_game;conflict_defender"),
-            make_play("rpo2", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", tags="rpo;quick_game;insert;conflict_defender"),
-            make_play("pass", "Stick", pass_concept="stick", tags="quick_game"),
+            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", personnel="11", tags="inside_run;gap_scheme;physical_run"),
+            make_play("rpo1", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion"),
+            make_play("rpo2", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion;quick_access"),
+            make_play("pass", "Stick", pass_concept="stick", personnel="11", tags="quick_game;safe_conversion"),
         ]
     )
     situation = playcaller_session.build_situation(
@@ -288,7 +288,7 @@ def test_choose_output_blocks_maps_third_long_to_conversion_pressure_constraint(
     blocks = playcaller_session.choose_output_blocks(situation)
 
     assert [block.title for block in blocks] == [
-        "Conversion pass options:",
+        "Third-long conversion options:",
         "Pressure answers:",
         "Constraint / screen options:",
     ]
@@ -303,7 +303,8 @@ def test_build_recommendation_groups_returns_dual_lists_on_second_short() -> Non
                 "Yankee",
                 pass_concept="yankee",
                 preferred_down_distance="second_short",
-                tags="shot_play;deep_shot;play_action",
+                personnel="11",
+                tags="shot_play;deep_pass;explosive;play_action;play_action_shot",
                 play_action="true",
             ),
             make_play(
@@ -311,7 +312,8 @@ def test_build_recommendation_groups_returns_dual_lists_on_second_short() -> Non
                 "Stick",
                 pass_concept="stick",
                 preferred_down_distance="second_short",
-                tags="quick_game",
+                personnel="11",
+                tags="quick_game;safe_conversion",
             ),
             make_play(
                 "rpo",
@@ -322,7 +324,8 @@ def test_build_recommendation_groups_returns_dual_lists_on_second_short() -> Non
                 rpo_tag="glance",
                 pass_concept="glance",
                 preferred_down_distance="second_short",
-                tags="rpo;quick_game;conflict_defender",
+                personnel="11",
+                tags="rpo;conflict_call;safe_conversion;man_beater",
             ),
         ]
     )
@@ -568,3 +571,190 @@ def test_lookup_tendencies_returns_explicit_personnel_fallback_metadata() -> Non
     assert metadata is not None
     assert metadata["fallback_used"] is True
     assert metadata["matched_keys"] == ("opponent", "down", "distance_bucket", "field_zone")
+
+
+def test_goal_line_blocks_use_physical_runs_and_goal_line_pass_answers() -> None:
+    """Goal-line mode should stay compact and avoid any RPO-specific block."""
+    playbook = pd.DataFrame(
+        [
+            make_play(
+                "duo",
+                "Duo",
+                play_type="run",
+                play_family="run",
+                run_scheme="duo",
+                pass_concept="none",
+                personnel="11",
+                preferred_field_zone="goal_line",
+                tags="inside_run;gap_scheme;physical_run;short_yardage_run;goal_line_answer",
+            ),
+            make_play(
+                "go_out",
+                "Go Out",
+                pass_concept="go_out",
+                personnel="11",
+                preferred_field_zone="goal_line",
+                tags="quick_game;quick_access;access_throw;safe_conversion;goal_line_answer;man_beater",
+            ),
+            make_play(
+                "rpo",
+                "Bubble RPO",
+                play_type="rpo",
+                play_family="rpo",
+                run_scheme="inside_zone",
+                rpo_tag="bubble",
+                pass_concept="bubble",
+                personnel="11",
+                preferred_field_zone="goal_line",
+                tags="rpo;conflict_call;quick_access;access_throw;constraint_call",
+            ),
+        ]
+    )
+    situation = playcaller_session.build_situation(
+        down=3,
+        distance=1,
+        field_zone="goal_line",
+        personnel="11",
+    )
+
+    groups = playcaller_session.build_recommendation_groups(
+        playbook,
+        situation,
+        tendencies=None,
+        top_n=4,
+        block_size=2,
+        intent="balanced",
+    )
+
+    assert [heading for heading, _ in groups] == [
+        "Physical run options:",
+        "Goal-line pass answers:",
+    ]
+    all_ids = [str(play["play_id"]) for _, plays in groups for play in plays]
+    assert "duo" in all_ids
+    assert "go_out" in all_ids
+    assert "rpo" not in all_ids
+
+
+def test_third_long_screen_block_excludes_bubble_now_rpos() -> None:
+    """Third-long screen blocks should only surface true screen answers."""
+    playbook = pd.DataFrame(
+        [
+            make_play(
+                "dagger",
+                "Dagger",
+                pass_concept="dagger",
+                personnel="11",
+                preferred_down_distance="third_long",
+                tags="intermediate_passing_concept;third_long_answer;zone_beater",
+            ),
+            make_play(
+                "screen",
+                "RB Screen",
+                pass_concept="rb_screen",
+                personnel="11",
+                preferred_down_distance="third_long",
+                tags="screen;constraint_call;anti_pressure;pressure_answer",
+            ),
+            make_play(
+                "bubble",
+                "Bubble RPO",
+                play_type="rpo",
+                play_family="rpo",
+                run_scheme="inside_zone",
+                rpo_tag="bubble",
+                pass_concept="bubble",
+                personnel="11",
+                preferred_down_distance="third_long",
+                tags="rpo;conflict_call;quick_access;access_throw;constraint_call",
+            ),
+        ]
+    )
+    situation = playcaller_session.build_situation(
+        down=3,
+        distance=10,
+        field_zone="midfield",
+        personnel="11",
+    )
+    tendencies = {
+        "pressure": {"yes": 0.9},
+        "coverage": {"cover1_man_free": 0.6},
+        "box_count": {"7": 0.6},
+        "def_front": {"odd_tite": 0.6},
+    }
+
+    groups = playcaller_session.build_recommendation_groups(
+        playbook,
+        situation,
+        tendencies=tendencies,
+        top_n=5,
+        block_size=2,
+        intent="balanced",
+    )
+
+    block_lookup = {heading: plays for heading, plays in groups}
+    screen_ids = [str(play["play_id"]) for play in block_lookup["Constraint / screen options:"]]
+    assert "screen" in screen_ids
+    assert "bubble" not in screen_ids
+
+
+def test_live_session_personnel_filter_is_hard() -> None:
+    """When live personnel is supplied, only matching plays should survive."""
+    playbook = pd.DataFrame(
+        [
+            make_play("duo_11", "Duo 11", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", personnel="11", tags="inside_run;gap_scheme;physical_run"),
+            make_play("stick_10", "Stick 10", pass_concept="stick", personnel="10", tags="quick_game;safe_conversion"),
+            make_play("mesh_11", "Mesh 11", pass_concept="mesh", personnel="11", tags="intermediate_passing_concept;man_beater;safe_conversion"),
+        ]
+    )
+    situation = playcaller_session.build_situation(
+        down=1,
+        distance=10,
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    groups = playcaller_session.build_recommendation_groups(
+        playbook,
+        situation,
+        tendencies=None,
+        top_n=5,
+        block_size=2,
+        intent="balanced",
+    )
+
+    returned_ids = {str(play["play_id"]) for _, plays in groups for play in plays}
+    assert "stick_10" not in returned_ids
+    assert returned_ids <= {"duo_11", "mesh_11"}
+
+
+def test_block_diversity_avoids_same_concept_same_formation_spam() -> None:
+    """Within a small block, diversity should avoid repeating the same concept/formation pair."""
+    playbook = pd.DataFrame(
+        [
+            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", personnel="11", tags="inside_run;gap_scheme;physical_run"),
+            make_play("rpo", "Stick RPO", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion"),
+            make_play("stick_dot", "Stick DOT", pass_concept="stick", formation_id="gun_1rb_2x2_spread_no_te", personnel="11", tags="quick_game;safe_conversion"),
+            make_play("stick_dot_2", "Stick DOT 2", pass_concept="stick", formation_id="gun_1rb_2x2_spread_no_te", personnel="11", tags="quick_game;safe_conversion"),
+            make_play("mesh_trips", "Mesh TRIPS", pass_concept="mesh", formation_id="gun_1rb_3x1_spread_no_te", personnel="11", tags="intermediate_passing_concept;man_beater;safe_conversion"),
+        ]
+    )
+    situation = playcaller_session.build_situation(
+        down=1,
+        distance=10,
+        field_zone="midfield",
+        personnel="11",
+    )
+
+    groups = playcaller_session.build_recommendation_groups(
+        playbook,
+        situation,
+        tendencies=None,
+        top_n=5,
+        block_size=2,
+        intent="balanced",
+    )
+
+    pass_block = dict(groups)["Pass options:"]
+    pass_ids = {str(play["play_id"]) for play in pass_block}
+    assert not {"stick_dot", "stick_dot_2"} <= pass_ids

@@ -81,6 +81,7 @@ SLOW_DEVELOPING_CONCEPTS = {"flood", "four_verts", "verts", "dagger", "y_cross",
 DEEP_SHOT_CONCEPTS = {"four_verts", "verts", "post", "go", "mills"}
 QUICK_GAME_CONCEPTS = {"slant_flat", "spacing", "stick", "curl_flat", "snag", "hitch", "mesh", "wr_tunnel_screen"}
 SCREEN_CONCEPTS = {"screen", "screens", "now_screen", "bubble", "rb_screen", "wr_tunnel_screen"}
+TRUE_SCREEN_CONCEPTS = {"rb_screen", "wr_tunnel_screen"}
 GAP_SCHEMES = {"duo", "power", "counter", "trap", "iso", "pin_pull"}
 ZONE_SCHEMES = {"inside_zone", "outside_zone", "wide_zone", "stretch"}
 PERIMETER_RUN_SCHEMES = {"outside_zone", "wide_zone", "jet", "toss", "sweep"}
@@ -119,6 +120,8 @@ FIRST_DOWN_RPO_TAGS = {"glance", "quick_out", "hitch", "stick", "bubble", "now",
 SHORT_YARDAGE_RUN_SCHEMES = {"duo", "inside_zone", "power", "counter", "trap"}
 HEAVY_BOX_SHORT_YARDAGE_SCHEMES = {"duo", "power", "counter", "inside_zone"}
 CONDENSED_FORMATION_HINTS = {"te_on", "wing", "bunch", "te_attached", "2te"}
+PHYSICAL_RUN_SCHEMES = {"duo", "power", "counter", "trap", "iso"}
+TRUE_THIRD_LONG_RPO_PASSES = {"glance", "quick_out", "stick", "go_out", "double_slant"}
 
 
 def load_coverage_taxonomy() -> dict[str, dict[str, str]]:
@@ -379,6 +382,8 @@ def infer_play_tags(play: pd.Series) -> set[str]:
         tags.add("pass")
     if play_type == "screen" or play_family == "screen" or pass_concept in SCREEN_CONCEPTS:
         tags.update({"screen", "quick_game"})
+    if pass_concept in TRUE_SCREEN_CONCEPTS:
+        tags.add("true_screen")
     if pass_concept in QUICK_GAME_CONCEPTS:
         tags.add("quick_game")
     if run_scheme in GAP_SCHEMES:
@@ -394,7 +399,11 @@ def infer_play_tags(play: pd.Series) -> set[str]:
     if play_action:
         tags.add("play_action")
     if (
-        pass_concept in DEEP_SHOT_CONCEPTS
+        "deep_pass" in tags
+        or "vertical_pass" in tags
+        or "shot_play" in tags
+        or "play_action_shot" in tags
+        or pass_concept in DEEP_SHOT_CONCEPTS
         or pass_concept in VERTICAL_CONCEPTS
         or pass_modifier == "deep_shot"
         or "deep_shot" in tags
@@ -404,10 +413,20 @@ def infer_play_tags(play: pd.Series) -> set[str]:
         tags.add("deep_shot")
     if pass_concept in SLOW_DEVELOPING_CONCEPTS or "slow_developing" in tags:
         tags.add("slow_developing")
-    if "red_zone" in tags:
+    if "red_zone" in tags or "red_zone_answer" in tags:
         tags.add("redzone")
+    if "goal_line_answer" in tags:
+        tags.add("goal_line")
     if "man_beater" in tags or pass_concept == "mesh":
         tags.add("man_beater")
+    if "intermediate_passing_concept" in tags:
+        tags.add("intermediate_pass")
+    if "conflict_call" in tags:
+        tags.add("conflict_defender")
+    if "pressure_answer" in tags or "anti_pressure" in tags:
+        tags.update({"pressure_beater", "blitz_beater"})
+    if "play_action_shot" in tags:
+        tags.add("explosive")
     return tags
 
 
@@ -418,6 +437,10 @@ def is_deep_concept(play: pd.Series, tags: set[str] | None = None) -> bool:
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
     pass_modifier = normalize_text(play_series_value(play, "pass_modifier"))
     return (
+        "deep_pass" in tags
+        or "vertical_pass" in tags
+        or "shot_play" in tags
+        or
         pass_concept in VERTICAL_CONCEPTS
         or pass_modifier == "deep_shot"
         or "deep_shot" in tags
@@ -585,7 +608,8 @@ def is_short_yardage_run(play: pd.Series, tags: set[str] | None = None) -> bool:
     return bool(
         play_type in {"run", "rpo"}
         and (
-            run_scheme in SHORT_YARDAGE_RUN_SCHEMES
+            "short_yardage_run" in tags
+            or run_scheme in SHORT_YARDAGE_RUN_SCHEMES
             or run_modifier in {"insert", "split_zone", "gt", "gy"}
             or {"inside_run", "gap_scheme", "insert", "split_zone"} & tags
         )
@@ -602,7 +626,53 @@ def credible_rpo_run_threat(play: pd.Series, tags: set[str] | None = None) -> bo
     return bool(
         run_scheme in {"inside_zone", "outside_zone", "power", "counter", "duo"}
         or run_modifier in {"insert", "split_zone", "gt", "gy", "pin_pull"}
-        or {"inside_run", "gap_scheme", "insert", "split_zone"} & tags
+        or {"inside_run", "gap_scheme", "zone_scheme", "physical_run", "insert", "split_zone"} & tags
+    )
+
+
+def is_true_screen_play(play: pd.Series, tags: set[str] | None = None) -> bool:
+    """Return whether the play is a true screen instead of an access RPO."""
+    if tags is None:
+        tags = infer_play_tags(play)
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+    return bool(
+        "true_screen" in tags
+        or pass_concept in TRUE_SCREEN_CONCEPTS
+        or (
+            "screen" in tags
+            and play_type != "rpo"
+            and rpo_tag not in {"bubble", "now"}
+        )
+    )
+
+
+def is_physical_run_play(play: pd.Series, tags: set[str] | None = None) -> bool:
+    """Return whether the play is a physical downhill run answer."""
+    if tags is None:
+        tags = infer_play_tags(play)
+    run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    run_modifier = normalize_text(play_series_value(play, "run_modifier"))
+    return bool(
+        "physical_run" in tags
+        or run_scheme in PHYSICAL_RUN_SCHEMES
+        or run_modifier in {"insert", "gt", "gy", "h", "g"}
+    )
+
+
+def is_generic_inside_zone_run(play: pd.Series, tags: set[str] | None = None) -> bool:
+    """Return whether the call is a plain inside zone run without downhill tags."""
+    if tags is None:
+        tags = infer_play_tags(play)
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    run_modifier = normalize_text(play_series_value(play, "run_modifier"))
+    return bool(
+        play_type == "run"
+        and run_scheme == "inside_zone"
+        and run_modifier in {"", "none"}
+        and "physical_run" not in tags
     )
 
 
@@ -980,6 +1050,7 @@ def score_pressure_fit(play: pd.Series, situation: Situation) -> tuple[float, li
     score = 0.0
     reasons: list[str] = []
     tags = infer_play_tags(play)
+    true_screen = is_true_screen_play(play, tags)
     pressure_kind, matched_label = pressure_match_kind(play, situation)
     protection = normalize_text(play_series_value(play, "protection"))
     play_action = is_play_action(play, tags)
@@ -1000,14 +1071,14 @@ def score_pressure_fit(play: pd.Series, situation: Situation) -> tuple[float, li
         score += add_reason(reasons, 3.0, "tactical: quick protection helps versus pressure")
     if protection == "screen":
         score += add_reason(reasons, 4.0, "tactical: screen protection helps versus pressure")
-    if "hot_answer" in tags:
-        score += add_reason(reasons, 4.0, "tactical: hot_answer is useful against pressure")
+    if "pressure_answer" in tags:
+        score += add_reason(reasons, 5.0, "tactical: pressure_answer is useful against pressure")
     if "quick_game" in tags:
         score += add_reason(reasons, 3.0, "tactical: quick_game is useful against pressure")
-    if "screen" in tags:
-        score += add_reason(reasons, 4.0, "tactical: screen is useful against pressure")
-    if {"pressure_beater", "blitz_beater"} & tags:
-        score += add_reason(reasons, 4.0, "tactical: tagged pressure answer")
+    if true_screen:
+        score += add_reason(reasons, 4.0, "tactical: true screen is useful against pressure")
+    if "anti_pressure" in tags:
+        score += add_reason(reasons, 4.0, "tactical: anti_pressure tag supports this answer")
 
     return clamp(score, -10.0, 20.0), reasons
 
@@ -1028,11 +1099,14 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
     rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
     play_action = is_play_action(play, tags)
     deep_concept = is_deep_concept(play, tags)
+    true_screen = is_true_screen_play(play, tags)
     four_verts = is_four_verts(play)
     distance = int(situation["distance"]) if isinstance(situation.get("distance"), int) else parse_numeric(situation.get("distance")) or 0
     coverage_score = coverage_score_value(play, situation)
     has_specific_coverage_support = supports_specific_coverage(play, coverage_id)
     short_yardage_run = is_short_yardage_run(play, tags)
+    physical_run = is_physical_run_play(play, tags)
+    generic_inside_zone = is_generic_inside_zone_run(play, tags)
     credible_rpo_threat = credible_rpo_run_threat(play, tags)
     access_rpo_tag = has_access_rpo_tag(play)
     formation_meta = formation_details(play)
@@ -1052,15 +1126,15 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
     play_type = normalize_text(play_series_value(play, "play_type"))
     is_critical_short = down_distance_tag in {"third_short", "fourth_short"} and distance <= 2
     immediate_access = bool(
-        {"access_throw", "hot_answer"} & tags
-        or pass_concept in {"stick", "hitch", "slant_flat", "glance"}
-        or rpo_tag in {"stick", "glance", "bubble", "now", "double_slant"}
+        {"access_throw", "quick_access", "safe_conversion"} & tags
+        or pass_concept in {"stick", "hitch", "slant_flat", "glance", "go_out", "quick_out"}
+        or rpo_tag in {"stick", "glance", "bubble", "now", "double_slant", "go_out", "quick_out"}
     )
     immediate_rpo_answer = bool(
         play_type == "rpo"
         and (
-            {"insert", "hot_answer", "conflict_defender"} & tags
-            or rpo_tag in {"stick", "glance", "bubble", "now", "double_slant"}
+            {"short_yardage_run", "physical_run", "conflict_call", "safe_conversion"} & tags
+            or rpo_tag in {"stick", "glance", "bubble", "now", "double_slant", "go_out", "quick_out"}
         )
     )
 
@@ -1073,8 +1147,12 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 5.0, "tactical: gap_scheme fits short yardage")
         if short_yardage_run:
             score += add_reason(reasons, 6.0, "short-yardage: physical run answers short yardage")
+        if physical_run:
+            score += add_reason(reasons, 4.0, "short-yardage: physical_run is preferred in tight conversion spots")
         if "insert" in tags:
             score += add_reason(reasons, 4.0, "tactical: insert element fits tight short-yardage boxes")
+        if generic_inside_zone and down_distance_tag in {"third_short", "fourth_short"}:
+            score += add_reason(reasons, -6.0, "guardrail: generic inside zone is de-emphasized behind stronger downhill short-yardage answers")
         if "quick_game" in tags:
             if is_critical_short and immediate_access:
                 score += add_reason(reasons, 4.0, "tactical: immediate quick-game answer fits critical short yardage")
@@ -1115,12 +1193,14 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
                 score += add_reason(reasons, 3.0, "tactical: 1st down RPO has an access throw")
             if credible_rpo_threat:
                 score += add_reason(reasons, 3.0, "tactical: RPO attached to credible run threat")
+            if "conflict_call" in tags:
+                score += add_reason(reasons, 2.0, "tactical: conflict_call tag improves 1st-down RPO value")
+            if {"quick_access", "access_throw"} & tags and pass_concept != "glance":
+                score += add_reason(reasons, 2.0, "tactical: quick access throw improves 1st-down RPO efficiency")
             if box_label in {"normal_box", "heavy_box", "loaded_box"} or coverage_id:
                 score += add_reason(reasons, 2.0, "tactical: RPO fits readable box or coverage structure")
-        if play_type == "rpo" and field_zone == "goal_line" and not (
-            {"goal_line", "redzone", "goal_line_answer", "red_zone_answer", "man_beater"} & tags
-        ):
-            score += add_reason(reasons, -4.0, "tactical: space-dependent RPO is tougher without goal-line room")
+        if play_action and pass_concept == "bootleg":
+            score += add_reason(reasons, -4.0, "guardrail: bootleg needs run-threat or aggressive tendency to lead on 1st & 10")
 
     if is_second_medium:
         if "inside_run" in tags:
@@ -1143,8 +1223,10 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 4.0, f"tactical: {pass_concept} is a real long-yardage answer")
         if "intermediate_pass" in tags:
             score += add_reason(reasons, 5.0, "tactical: intermediate_pass fits long yardage")
-        if "screen" in tags:
-            score += add_reason(reasons, 4.0, "tactical: screen is useful in long yardage")
+        if "intermediate_passing_concept" in tags:
+            score += add_reason(reasons, 3.0, "tactical: intermediate concept provides a true conversion structure")
+        if true_screen:
+            score += add_reason(reasons, 4.0, "tactical: true screen is useful in long yardage when pressure arrives")
         if deep_concept and is_second_long and field_zone == "open_field":
             score += add_reason(reasons, 3.0, "tactical: deep concept has some second_long open_field value")
         if play_action and is_second_long and field_zone == "open_field":
@@ -1167,7 +1249,7 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, delta, f"tactical: {rpo_tag} is a viable long-yardage RPO answer")
         if play_type == "run":
             score += add_reason(reasons, -10.0, "tactical: run-first call is a poor long-yardage answer")
-        if play_type == "rpo" and rpo_tag in RUN_FIRST_LONG_RPO_TAGS and not ({"screen", "explosive", "perimeter_answer"} & tags):
+        if play_type == "rpo" and rpo_tag in RUN_FIRST_LONG_RPO_TAGS:
             score += add_reason(reasons, -5.0, f"tactical: {rpo_tag} RPO is too run-first for long yardage")
         if "inside_run" in tags and not ({"screen", "draw"} & tags):
             score += add_reason(reasons, -6.0, "tactical: inside_run profile is too run-first for long yardage")
@@ -1178,6 +1260,10 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, -4.0, "tactical: gap/counter profile is too run-first for long yardage")
 
     if is_third_medium:
+        if "third_medium_answer" in tags:
+            score += add_reason(reasons, 5.0, "tactical: tagged third_medium_answer fits the sticks")
+        if "intermediate_passing_concept" in tags:
+            score += add_reason(reasons, 5.0, "tactical: intermediate_passing_concept is preferred on third_medium")
         if "quick_game" in tags:
             score += add_reason(reasons, 5.0, "tactical: quick_game is strong on third_medium")
         if pass_concept in {"sticks", "stick"} or "sticks" in tags:
@@ -1200,32 +1286,36 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 3.0, "tactical: y_cross can convert third_medium")
         if rpo_tag and rpo_tag != "none" and distance <= 6:
             score += add_reason(reasons, 3.0, "tactical: rpo can help on manageable third_medium")
-        if deep_concept and not has_explicit_conversion_answer(play, situation, tags):
+        if four_verts and not has_explicit_conversion_answer(play, situation, tags):
+            score += add_reason(reasons, -12.0, "guardrail: four verts should not dominate third_medium over real conversion concepts")
+        elif deep_concept and not has_explicit_conversion_answer(play, situation, tags):
             score += add_reason(reasons, -8.0, "tactical: deep concept is too volatile on third_medium")
 
     if is_fourth_medium and deep_concept and not has_explicit_conversion_answer(play, situation, tags):
         score += add_reason(reasons, -10.0, "tactical: deep concept is too volatile on fourth_medium")
 
     if is_redzone:
-        if "redzone" in tags:
-            score += add_reason(reasons, 4.0, "tactical: redzone tag fits condensed field")
+        if "redzone" in tags or "red_zone_answer" in tags:
+            score += add_reason(reasons, 5.0, "tactical: red_zone_answer fits condensed field")
+        if "safe_conversion" in tags:
+            score += add_reason(reasons, 4.0, "tactical: safe_conversion is valuable in the red zone")
         if "quick_game" in tags:
-            score += add_reason(reasons, 3.0, "tactical: quick_game is useful in redzone")
+            score += add_reason(reasons, 4.0, "tactical: quick_game is useful in redzone")
         if "inside_run" in tags:
             score += add_reason(reasons, 3.0, "tactical: inside_run works in redzone")
-        if short_yardage_run and distance <= 3:
-            score += add_reason(reasons, 7.0, "short-yardage: physical run fits redzone short yardage")
-        if "play_action" in tags:
-            score += add_reason(reasons, 3.0, "tactical: play_action stresses redzone defenders")
-        if rpo_tag and rpo_tag != "none":
-            score += add_reason(reasons, 3.0, "tactical: rpo is useful in redzone")
-        if {"rub", "man_beater"} & tags:
-            score += add_reason(reasons, 3.0, "tactical: rub/man_beater traits help in redzone")
+        if physical_run and distance <= 4:
+            score += add_reason(reasons, 6.0, "short-yardage: physical run fits redzone short yardage")
+        if "play_action" in tags and not deep_concept and pass_concept != "bootleg":
+            score += add_reason(reasons, 1.0, "tactical: selective play action can stress redzone defenders")
+        if "rpo" in tags and distance >= 3:
+            score += add_reason(reasons, 2.0, "tactical: selective RPO can help in the red zone")
+        if "man_beater" in tags:
+            score += add_reason(reasons, 4.0, "tactical: man_beater traits help in redzone")
         if deep_concept:
             score += add_reason(reasons, -8.0, "tactical: deep concept is risky in redzone")
-        if "slow_developing" in tags:
-            score += add_reason(reasons, -5.0, "tactical: slow_developing concept is tough in redzone")
-        if "screen" in tags and distance <= 3:
+        if "slow_developing" in tags or (play_action and pass_concept == "bootleg" and distance <= 5):
+            score += add_reason(reasons, -5.0, "guardrail: slow play-action is risky in tight red zone")
+        if true_screen and distance <= 3:
             score += add_reason(reasons, -5.0, "tactical: screen is weak without space in redzone short yardage")
 
     if is_goal_line:
@@ -1233,23 +1323,22 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 5.0, "tactical: inside_run fits goal_line")
         if "gap_scheme" in tags:
             score += add_reason(reasons, 4.0, "tactical: gap_scheme fits goal_line")
-        if short_yardage_run:
+        if short_yardage_run or physical_run:
             score += add_reason(reasons, 8.0, "short-yardage: physical run is preferred at the goal line")
+        if generic_inside_zone:
+            score += add_reason(reasons, -4.0, "guardrail: generic inside zone trails more physical goal-line runs")
         if "quick_game" in tags:
-            if {"goal_line", "goal_line_answer", "redzone", "red_zone_answer", "rub", "man_beater"} & tags:
+            if {"goal_line", "goal_line_answer", "redzone", "red_zone_answer", "man_beater"} & tags:
                 score += add_reason(reasons, 4.0, "tactical: tagged quick-game fits goal_line")
             else:
                 score += add_reason(reasons, 1.0, "tactical: generic quick_game has limited goal_line value")
         if "play_action" in tags:
-            score += add_reason(reasons, 3.0, "tactical: play_action can punish goal_line trigger")
+            score += add_reason(reasons, -3.0, "guardrail: slow play action is risky at the goal line")
         if rpo_tag and rpo_tag != "none":
-            if credible_rpo_threat or {"goal_line_answer", "red_zone_answer", "man_beater"} & tags:
-                score += add_reason(reasons, 4.0, "tactical: rpo is viable at goal_line")
-            else:
-                score += add_reason(reasons, -3.0, "tactical: space-dependent RPO is not a default goal_line answer")
+            score += add_reason(reasons, -8.0, "guardrail: RPO is not a default goal-line answer")
         if deep_concept:
             score += add_reason(reasons, -12.0, "tactical: deep concept is a poor goal_line answer")
-        if "screen" in tags:
+        if true_screen:
             score += add_reason(reasons, -7.0, "tactical: screen is weak without space at the goal line")
 
     if box_label in {"heavy_box", "loaded_box"}:
@@ -1257,16 +1346,16 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 4.0, f"tactical: play_action is useful against {box_label}")
         if rpo_tag and rpo_tag != "none":
             score += add_reason(reasons, 4.0, f"tactical: rpo is useful against {box_label}")
-        if short_yardage_run and (run_scheme in HEAVY_BOX_SHORT_YARDAGE_SCHEMES or run_modifier in {"insert", "gt", "gy"}):
+        if (short_yardage_run or physical_run) and (run_scheme in HEAVY_BOX_SHORT_YARDAGE_SCHEMES or run_modifier in {"insert", "gt", "gy"}):
             score += add_reason(reasons, 5.0, "short-yardage: insert/duo/power fits heavy box")
         if "perimeter_run" in tags:
-            score += add_reason(reasons, 3.0, f"tactical: perimeter_run can punish {box_label}")
+            score += add_reason(reasons, -2.0, f"guardrail: perimeter run is tougher versus {box_label}")
             if run_scheme in PERIMETER_RUN_SCHEMES:
                 score += add_reason(reasons, -3.0, "short-yardage: perimeter run needs space")
         if "quick_game" in tags:
             score += add_reason(reasons, 3.0, f"tactical: quick_game is useful against {box_label}")
-        if "screen" in tags:
-            score += add_reason(reasons, 3.0, f"tactical: screen is useful against {box_label}")
+        if true_screen:
+            score += add_reason(reasons, 3.0, f"tactical: true screen is useful against {box_label}")
         if "inside_run" in tags and not (normalize_beats_box(play) & {"heavy_box", "loaded_box"}):
             score += add_reason(reasons, -4.0, f"tactical: inside_run lacks proven fit versus {box_label}")
         if run_scheme == "outside_zone" and short_yardage_run is False:
@@ -1306,32 +1395,23 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
             score += add_reason(reasons, 3.0, "tactical: flood is strong versus cover3")
         if pass_concept == "curl_flat" or "curl_flat" in tags:
             score += add_reason(reasons, 3.0, "tactical: curl_flat is strong versus cover3")
-        if pass_concept == "seams" or "seams" in tags:
-            score += add_reason(reasons, 3.0, "tactical: seams can stress cover3")
         if play_action:
             score += add_reason(reasons, 2.0, "tactical: play_action can help versus cover3")
         if four_verts and has_specific_coverage_support and (is_long_context or int(situation["down"]) == 1 or play_action):
             score += add_reason(reasons, 2.0, "tactical: four_verts has contextual cover3 value here")
 
     if coverage_base_id == "cover4" and (is_second_long or is_third_long or is_fourth_long or distance >= 8):
-        if pass_concept in {"seams", "y_cross", "flood", "curl_flat"} and (
+        if pass_concept in {"y_cross", "flood", "curl_flat"} and (
             has_specific_coverage_support or "cover4_beater" in tags
         ):
             score += add_reason(reasons, 3.0, f"tactical: {pass_concept} has contextual value versus cover4")
-        if (
-            {"seams"} & tags
-            and (has_specific_coverage_support or "cover4_beater" in tags)
-        ):
-            score += add_reason(reasons, 3.0, "tactical: seams profile helps versus cover4")
 
     coverage_fams = coverage_families(coverage_id)
     if "man" in coverage_fams or coverage_base_id in {"cover0", "cover1", "man"}:
         if pass_concept == "mesh" or "mesh" in tags:
             score += add_reason(reasons, 4.0, "tactical: mesh is strong versus man")
-        if "rub" in tags:
-            score += add_reason(reasons, 4.0, "tactical: rub concept fits man coverage")
         if (
-            {"man_beater", "rub", "mesh", "option", "quick_game", "matchup_win"} & tags
+            {"man_beater", "mesh", "quick_game"} & tags
             or pass_concept in CONVERSION_MAN_CONCEPTS
         ):
             score += add_reason(reasons, 4.0, "tactical: man_beater traits fit man coverage")
@@ -1340,23 +1420,19 @@ def score_tactical_fit(play: pd.Series, situation: Situation) -> tuple[float, li
 
     if "zone" in coverage_fams or coverage_base_id in {"cover2", "cover3", "soft_zone", "zone"}:
         if (
-            {"spacing", "curl_flat", "flood", "snag", "seams"} & tags
+            {"zone_beater", "curl_flat", "flood", "soft_zone_beater"} & tags
             or pass_concept in CONVERSION_ZONE_CONCEPTS
         ) and coverage_score > 0:
             score += add_reason(reasons, 3.0, "tactical: zone-coverage traits fit zone coverage")
-        if pass_concept == "spacing" or "spacing" in tags:
-            score += add_reason(reasons, 3.0, "tactical: spacing fits zone coverage")
         if pass_concept == "curl_flat" or "curl_flat" in tags:
             score += add_reason(reasons, 3.0, "tactical: curl_flat fits zone coverage")
-        if pass_concept == "snag" or "snag" in tags:
-            score += add_reason(reasons, 3.0, "tactical: snag fits zone coverage")
 
     if coverage_base_id == "cover0":
         if "quick_game" in tags:
             score += add_reason(reasons, 5.0, "tactical: quick_game is critical versus cover0")
         if "man_beater" in tags:
             score += add_reason(reasons, 5.0, "tactical: man_beater traits help versus cover0")
-        if "screen" in tags:
+        if true_screen:
             score += add_reason(reasons, 4.0, "tactical: screen can punish cover0 pressure")
         if "slow_developing" in tags:
             score += add_reason(reasons, -8.0, "tactical: slow_developing concept is dangerous versus cover0")
@@ -1403,13 +1479,15 @@ def score_risk_reward(play: pd.Series, situation: Situation) -> tuple[float, lis
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
     rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
     play_type = normalize_text(play_series_value(play, "play_type"))
+    true_screen = is_true_screen_play(play, tags)
+    physical_run = is_physical_run_play(play, tags)
 
     if down_distance_tag in {"third_short", "fourth_short"}:
         if {"inside_run", "quick_game", "rpo", "gap_scheme"} & tags:
             score += add_reason(reasons, 3.0, "risk-reward: efficient answer for short conversion")
         if play_type == "run" or "insert" in tags or "gap_scheme" in tags:
             score += add_reason(reasons, 2.0, "risk-reward: run-first profile is reliable when only 1-2 yards are needed")
-        if play_type == "pass" and {"man_beater"} & tags and not ({"access_throw", "hot_answer"} & tags):
+        if play_type == "pass" and {"man_beater"} & tags and "access_throw" not in tags:
             score += add_reason(reasons, -3.0, "risk-reward: generic dropback conversion is lower percentage than a run or immediate access throw")
         if deep_concept:
             score += add_reason(reasons, -5.0, "risk-reward: deep_shot is too volatile here")
@@ -1417,10 +1495,14 @@ def score_risk_reward(play: pd.Series, situation: Situation) -> tuple[float, lis
     if down_distance_tag == "third_medium":
         if deep_concept and not has_explicit_conversion_answer(play, situation, tags):
             score += add_reason(reasons, -4.0, "risk-reward: deep concept is risky on third_medium")
+        if "intermediate_passing_concept" in tags or "third_medium_answer" in tags:
+            score += add_reason(reasons, 2.0, "risk-reward: conversion-oriented pass profile fits third_medium")
 
     if down_distance_tag == "second_long":
         if play_type == "pass" and (
-            pass_concept in LONG_YARDAGE_PASS_CONCEPTS or "intermediate_pass" in tags
+            pass_concept in LONG_YARDAGE_PASS_CONCEPTS
+            or "intermediate_pass" in tags
+            or "intermediate_passing_concept" in tags
         ):
             score += add_reason(reasons, 3.0, "risk-reward: chunk or intermediate pass fits second_long")
         if deep_concept and field_zone == "open_field":
@@ -1431,20 +1513,28 @@ def score_risk_reward(play: pd.Series, situation: Situation) -> tuple[float, lis
             score += add_reason(reasons, -3.0, f"risk-reward: {rpo_tag} RPO is too low-upside on second_long")
 
     if int(situation["down"]) == 1 and field_zone == "open_field":
-        if play_action:
-            score += add_reason(reasons, 3.0, "risk-reward: play_action is attractive on 1st down open field")
+        if play_action and deep_concept:
+            score += add_reason(reasons, 2.0, "risk-reward: selective play_action shot is acceptable on 1st down open field")
         if deep_concept:
             score += add_reason(reasons, 2.0, "risk-reward: deep_shot is acceptable on 1st down open field")
 
     if field_zone == "redzone":
-        if {"quick_game", "rpo", "play_action"} & tags:
+        if {"quick_game", "safe_conversion", "red_zone_answer"} & tags:
             score += add_reason(reasons, 3.0, "risk-reward: efficient redzone profile")
+        if physical_run:
+            score += add_reason(reasons, 2.0, "risk-reward: physical run profile carries value in the redzone")
+        if true_screen:
+            score += add_reason(reasons, -3.0, "risk-reward: true screen loses value in the tighter redzone")
         if deep_concept:
             score += add_reason(reasons, -4.0, "risk-reward: deep_shot loses value in redzone")
 
     if field_zone == "goal_line":
-        if {"inside_run", "quick_game", "rpo"} & tags:
+        if {"goal_line_answer", "inside_run", "gap_scheme"} & tags or physical_run:
             score += add_reason(reasons, 4.0, "risk-reward: high-percentage goal_line profile")
+        if play_type == "rpo":
+            score += add_reason(reasons, -5.0, "risk-reward: RPO is not a preferred goal-line profile")
+        if true_screen:
+            score += add_reason(reasons, -5.0, "risk-reward: true screen is a poor goal_line gamble")
         if deep_concept:
             score += add_reason(reasons, -5.0, "risk-reward: deep_shot is a poor goal_line gamble")
 
@@ -1590,6 +1680,28 @@ def aggregate_box_probabilities(
     return aggregated
 
 
+def front_family_aliases(value: object) -> set[str]:
+    """Return compatible front-family aliases for a front value."""
+    key = normalize_text(value)
+    if not key:
+        return set()
+
+    aliases = {key}
+    if any(token in key for token in ("odd", "bear", "mint", "tite", "5")):
+        aliases.add("odd")
+    if any(token in key for token in ("even", "over", "under", "4")):
+        aliases.add("even")
+    if "bear" in key:
+        aliases.add("bear")
+    if "tite" in key or "mint" in key:
+        aliases.add("odd_tite")
+    if "over" in key:
+        aliases.update({"over", "even"})
+    if "under" in key:
+        aliases.update({"under", "even"})
+    return aliases
+
+
 def apply_tendency_adjustments(
     play: pd.Series,
     tendencies: TendencySnapshot | None,
@@ -1601,22 +1713,91 @@ def apply_tendency_adjustments(
     tags = infer_play_tags(play)
     adjustment = 0.0
     reasons: list[str] = []
-    coverage_values = parse_list(play_series_value(play, "beats_coverage"))
     play_type = normalize_text(play_series_value(play, "play_type"))
     rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+    true_screen = is_true_screen_play(play, tags)
+    physical_run = is_physical_run_play(play, tags)
+    generic_inside_zone = is_generic_inside_zone_run(play, tags)
+    coverage_values = normalize_beats_coverage(play)
+    front_values = set(parse_list(play_series_value(play, "beats_front")))
 
     coverage_probabilities = tendencies.get("coverage")
     if coverage_probabilities:
-        for coverage_id in coverage_values:
-            if coverage_id in {"any", "none", "man", "zone", "match"}:
+        for coverage_id, raw_probability in coverage_probabilities.items():
+            probability = float(raw_probability)
+            if probability <= 0:
                 continue
-            probability = float(coverage_probabilities.get(coverage_id, 0.0))
-            if probability > 0:
+            match_kind, matched_label = coverage_match_kind(play, {"coverage_id": coverage_id})
+            match_bonus = {
+                "exact": 10.0,
+                "base": 7.0,
+                "family": 4.0,
+                "any": 1.5,
+            }.get(match_kind, 0.0)
+            if match_bonus > 0:
+                adjustment += add_reason(
+                    reasons,
+                    clamp(probability * match_bonus, 0.0, match_bonus),
+                    f"tendency: coverage {coverage_id} fits via {match_kind} match {matched_label or coverage_id}",
+                )
+
+            base_coverage = coverage_base(coverage_id)
+            coverage_fams = coverage_families(coverage_id)
+            if base_coverage == "cover1":
+                if "cover_1_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 8.0, 0.0, 8.0), "tendency: cover1 beater matches the top coverage tendency")
+                if "man_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 5.0, 0.0, 5.0), "tendency: man_beater rises versus cover1 tendency")
+            if base_coverage == "cover2":
+                if "cover_2_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 7.0, 0.0, 7.0), "tendency: cover2 beater matches the top coverage tendency")
+                if "zone_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 4.0, 0.0, 4.0), "tendency: zone_beater fits cover2 spacing")
+            if base_coverage == "cover3":
+                if "cover_3_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 8.0, 0.0, 8.0), "tendency: cover3 beater matches the top coverage tendency")
+                if {"zone_beater", "soft_zone_beater"} & tags:
+                    adjustment += add_reason(reasons, clamp(probability * 5.0, 0.0, 5.0), "tendency: zone answer rises versus cover3 tendency")
+            if base_coverage == "cover4":
+                if "cover_4_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 8.0, 0.0, 8.0), "tendency: cover4 beater matches the top coverage tendency")
+                if "match_beater" in tags:
+                    adjustment += add_reason(reasons, clamp(probability * 5.0, 0.0, 5.0), "tendency: match beater rises versus quarters tendency")
+            if "man" in coverage_fams and "man_beater" in tags:
+                adjustment += add_reason(reasons, clamp(probability * 4.0, 0.0, 4.0), "tendency: man-beater traits fit likely man coverage")
+            if "zone" in coverage_fams and "zone_beater" in tags:
+                adjustment += add_reason(reasons, clamp(probability * 3.0, 0.0, 3.0), "tendency: zone-beater traits fit likely zone coverage")
+            if "soft_zone" in coverage_fams and "soft_zone_beater" in tags:
+                adjustment += add_reason(reasons, clamp(probability * 4.0, 0.0, 4.0), "tendency: soft-zone beater fits spot-drop spacing")
+            if "match" in coverage_fams and "match_beater" in tags:
+                adjustment += add_reason(reasons, clamp(probability * 4.0, 0.0, 4.0), "tendency: match-beater traits fit likely match coverage")
+            if base_coverage in {"cover1", "cover3"} and "middle_field_closed_beater" in tags:
+                adjustment += add_reason(reasons, clamp(probability * 4.0, 0.0, 4.0), "tendency: middle-field-closed answer fits the likely shell")
+            if base_coverage in {"cover2", "cover4", "cover6", "cover7", "cover8"} and "middle_field_open_beater" in tags:
+                adjustment += add_reason(reasons, clamp(probability * 4.0, 0.0, 4.0), "tendency: middle-field-open answer fits the likely shell")
+
+    front_probabilities = tendencies.get("def_front")
+    if front_probabilities:
+        for front_id, raw_probability in front_probabilities.items():
+            probability = float(raw_probability)
+            if probability <= 0:
+                continue
+            aliases = front_family_aliases(front_id)
+            if front_values and front_values & aliases:
                 adjustment += add_reason(
                     reasons,
                     clamp(probability * 6.0, 0.0, 6.0),
-                    f"tendency: opponent shows {coverage_id} often",
+                    f"tendency: front fit aligns with {front_id}",
                 )
+            if aliases & {"bear", "odd", "odd_tite"}:
+                if physical_run and {"inside_run", "gap_scheme"} & tags:
+                    adjustment += add_reason(reasons, clamp(probability * 6.0, 0.0, 6.0), "tendency: downhill physical run fits bear/odd structure")
+                if generic_inside_zone:
+                    adjustment += add_reason(reasons, -clamp(probability * 4.0, 0.0, 4.0), "tendency: generic inside zone is less attractive into bear/odd structure")
+                if "perimeter_run" in tags and not (front_values & aliases):
+                    adjustment += add_reason(reasons, -clamp(probability * 3.0, 0.0, 3.0), "tendency: perimeter run is less attractive into a firm odd front")
+            if "even" in aliases and {"outside_run", "perimeter_run", "zone_scheme"} & tags:
+                adjustment += add_reason(reasons, clamp(probability * 2.0, 0.0, 2.0), "tendency: even spacing can give perimeter or zone runs cleaner pictures")
 
     box_probabilities = aggregate_box_probabilities(tendencies.get("box_count"))
     for box_label, probability in box_probabilities.items():
@@ -1632,7 +1813,25 @@ def apply_tendency_adjustments(
     pressure_probabilities = tendencies.get("pressure")
     if pressure_probabilities and float(pressure_probabilities.get("yes", 0.0)) > 0:
         pressure_probability = float(pressure_probabilities["yes"])
-        if {"quick_game", "screen", "rpo"} & tags:
+        if {"pressure_answer", "anti_pressure"} & tags:
+            adjustment += add_reason(
+                reasons,
+                clamp(pressure_probability * 7.0, 0.0, 7.0),
+                "tendency: pressure profile favors tagged pressure answers",
+            )
+        if true_screen:
+            adjustment += add_reason(
+                reasons,
+                clamp(pressure_probability * 8.0, 0.0, 8.0),
+                "tendency: screen punishes pressure tendency",
+            )
+            if "quick_game" in tags or play_type == "screen":
+                adjustment += add_reason(
+                    reasons,
+                    clamp(pressure_probability * 3.0, 0.0, 3.0),
+                    "tendency: pressure profile favors quick answers",
+                )
+        elif {"quick_game", "rpo"} & tags:
             adjustment += add_reason(
                 reasons,
                 clamp(pressure_probability * 5.0, 0.0, 5.0),
@@ -1641,7 +1840,7 @@ def apply_tendency_adjustments(
         if "slow_developing" in tags:
             adjustment += add_reason(
                 reasons,
-                -clamp(pressure_probability * 4.0, 0.0, 4.0),
+                -clamp(pressure_probability * 6.0, 0.0, 6.0),
                 "tendency: pressure profile hurts slow-developing concepts",
             )
 
@@ -1652,25 +1851,46 @@ def apply_tendency_adjustments(
     heavy_box_fit = bool(normalize_beats_box(play) & {"heavy_box", "loaded_box"})
 
     if heavy_box_probability > 0:
-        if {"play_action", "rpo", "quick_game", "screen"} & tags:
+        if physical_run and {"inside_run", "gap_scheme"} & tags:
+            adjustment += add_reason(
+                reasons,
+                clamp(heavy_box_probability * 7.0, 0.0, 7.0),
+                "tendency: heavy box profile boosts downhill physical answers",
+            )
+        if {"play_action", "rpo", "quick_game"} & tags or true_screen:
             adjustment += add_reason(
                 reasons,
                 clamp(heavy_box_probability * 7.0, 0.0, 7.0),
                 "tendency: heavy box profile invites pass or constraint answers",
             )
-        if "inside_run" in tags and not heavy_box_fit:
+        if generic_inside_zone and not heavy_box_fit:
             adjustment += add_reason(
                 reasons,
                 -clamp(heavy_box_probability * 9.0, 0.0, 9.0),
-                "tendency: heavy box profile hurts inside runs without box fit",
+                "tendency: heavy box profile hurts generic inside zone without box fit",
+            )
+        if "perimeter_run" in tags and not heavy_box_fit:
+            adjustment += add_reason(
+                reasons,
+                -clamp(heavy_box_probability * 5.0, 0.0, 5.0),
+                "tendency: heavy box profile squeezes perimeter runs without a proven answer",
             )
 
-    if light_box_probability > 0 and "inside_run" in tags:
-        adjustment += add_reason(
-            reasons,
-            clamp(light_box_probability * 5.0, 0.0, 5.0),
-            "tendency: light box profile improves inside runs",
-        )
+    if light_box_probability > 0:
+        if "inside_run" in tags:
+            adjustment += add_reason(
+                reasons,
+                clamp(light_box_probability * 5.0, 0.0, 5.0),
+                "tendency: light box profile improves inside runs",
+            )
+        if {"outside_run", "perimeter_run"} & tags or (
+            "rpo" in tags and {"quick_access", "access_throw"} & tags
+        ):
+            adjustment += add_reason(
+                reasons,
+                clamp(light_box_probability * 5.0, 0.0, 5.0),
+                "tendency: light box profile improves perimeter space answers",
+            )
 
     if play_type == "rpo":
         readable_box_probability = (
@@ -1684,7 +1904,7 @@ def apply_tendency_adjustments(
                 clamp(readable_box_probability * 4.0, 0.0, 4.0),
                 "tendency: RPO fits readable box tendency",
             )
-        if rpo_tag in FIRST_DOWN_RPO_TAGS and coverage_probabilities:
+        if rpo_tag in FIRST_DOWN_RPO_TAGS and coverage_probabilities and "conflict_call" in tags:
             structured_coverage_probability = sum(
                 float(probability)
                 for coverage_id, probability in coverage_probabilities.items()
@@ -1752,6 +1972,9 @@ def attacks_sticks(play: pd.Series, tags: set[str]) -> bool:
     return bool(
         "attacks_sticks" in tags
         or "intermediate_pass" in tags
+        or "intermediate_passing_concept" in tags
+        or "third_medium_answer" in tags
+        or "third_long_answer" in tags
         or pass_concept in CONVERSION_STICKS_CONCEPTS
         or pass_concept in {"dagger", "flood", "curl_flat", "y_cross"}
     )
@@ -1769,7 +1992,14 @@ def is_good_play_action_situation(
     down_distance_tag = normalize_text(situation.get("down_distance_tag"))
     field_zone = normalize_text(situation.get("field_zone"))
     box_label = normalize_text(situation.get("box_label"))
-    if is_pressure_context(situation, tendencies):
+    coverage_id = normalize_text(situation.get("coverage_id"))
+    pressure_signal = is_pressure_context(situation, tendencies)
+    aggressive_coverage = coverage_base(coverage_id) in {"cover0", "cover1"}
+    heavy_box_signal = (
+        box_label in {"normal_box", "heavy_box", "loaded_box"}
+        or heavy_box_probability(tendencies) >= 0.45
+    )
+    if field_zone == "goal_line":
         return False
     return bool(
         down_distance_tag == "second_short"
@@ -1777,10 +2007,7 @@ def is_good_play_action_situation(
         or (
             down in {1, 2}
             and field_zone == "open_field"
-            and (
-                box_label in {"normal_box", "heavy_box", "loaded_box"}
-                or heavy_box_probability(tendencies) >= 0.45
-            )
+            and (heavy_box_signal or aggressive_coverage or pressure_signal)
         )
     )
 
@@ -1795,6 +2022,7 @@ def apply_contextual_adjustments(
     play_type = normalize_text(play_series_value(play, "play_type"))
     play_action = is_play_action(play, tags)
     screen = is_screen_play(play, tags)
+    true_screen = is_true_screen_play(play, tags)
     down = int(situation["down"])
     distance = parse_numeric(situation.get("distance")) or 0
     down_distance_tag = normalize_text(situation.get("down_distance_tag"))
@@ -1824,6 +2052,7 @@ def apply_contextual_adjustments(
     play_is_pressure_answer = bool({"pressure_beater", "blitz_beater", "anti_pressure"} & tags)
     play_attacks_sticks = attacks_sticks(play, tags)
     pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
     reasons: list[str] = []
     adjustment = 0.0
 
@@ -1853,11 +2082,18 @@ def apply_contextual_adjustments(
                 "guardrail: play action is too expensive without defensive context",
             )
         if pressure_context:
-            adjustment += add_reason(
-                reasons,
-                -7.0,
-                "rerank: play_action is de-emphasized versus likely pressure",
-            )
+            if pass_concept == "bootleg" and down_distance_tag == "second_short":
+                adjustment += add_reason(
+                    reasons,
+                    2.0,
+                    "rerank: bootleg can punish aggressive pressure in a run-threat spot",
+                )
+            else:
+                adjustment += add_reason(
+                    reasons,
+                    -7.0,
+                    "rerank: play_action is de-emphasized versus likely pressure",
+                )
         if down_distance_tag in {"third_long", "fourth_long"}:
             penalty = -6.0 if play_is_pressure_answer and pressure_context else -12.0
             adjustment += add_reason(
@@ -1883,33 +2119,39 @@ def apply_contextual_adjustments(
                 -4.0,
                 "guardrail: bootleg needs established run threat or aggressive box",
             )
+        if field_zone in {"redzone", "goal_line"} and pass_concept == "bootleg" and not {"goal_line_answer", "red_zone_answer"} & tags:
+            adjustment += add_reason(
+                reasons,
+                -4.0,
+                "guardrail: slow play-action is risky in tight red zone",
+            )
 
     if screen:
-        if pressure_context:
+        if true_screen and pressure_context:
             adjustment += add_reason(
                 reasons,
                 6.0,
                 "rerank: screen gets a contextual boost versus pressure",
             )
-        elif aggressive_coverage:
+        elif true_screen and aggressive_coverage:
             adjustment += add_reason(
                 reasons,
                 2.0,
                 "rerank: screen has some value versus space-friendly coverage structure",
             )
-        elif soft_or_space_coverage and (box_pressure_signal or distance >= 6):
+        elif true_screen and soft_or_space_coverage and (box_pressure_signal or distance >= 6):
             adjustment += add_reason(
                 reasons,
                 1.0,
                 "rerank: screen has a small space-based value here",
             )
-        else:
+        elif true_screen:
             adjustment += add_reason(
                 reasons,
                 -8.0,
-                "rerank: screen is de-emphasized without pressure context",
+                "guardrail: screen needs pressure or aggressive tendency",
             )
-        if not pressure_context and not box_pressure_signal and not aggressive_coverage:
+        if true_screen and not pressure_context and not box_pressure_signal and not aggressive_coverage:
             adjustment += add_reason(
                 reasons,
                 -4.0,
@@ -1922,13 +2164,13 @@ def apply_contextual_adjustments(
                 -7.0,
                 "guardrail: screen is not a default first-and-10 open-field answer",
             )
-        if down_distance_tag in SHORT_TAGS:
+        if true_screen and down_distance_tag in SHORT_TAGS:
             adjustment += add_reason(
                 reasons,
                 -4.0,
                 "rerank: screen is de-emphasized in short-yardage situations",
             )
-        if field_zone in {"goal_line", "redzone"}:
+        if true_screen and field_zone in {"goal_line", "redzone"}:
             adjustment += add_reason(
                 reasons,
                 -6.0,
@@ -1939,7 +2181,7 @@ def apply_contextual_adjustments(
                 -4.0,
                 "guardrail: screen is weak without space or pressure",
             )
-        if distance >= 8:
+        if true_screen and distance >= 8:
             if pressure_context:
                 adjustment += add_reason(
                     reasons,
@@ -1952,18 +2194,24 @@ def apply_contextual_adjustments(
                     -4.0,
                     "guardrail: screen needs pressure support in long yardage",
                 )
-        if down_distance_tag in {"third_long", "fourth_long"} and not play_attacks_sticks:
+        if true_screen and down_distance_tag in {"third_long", "fourth_long"} and not play_attacks_sticks:
             penalty = -2.0 if tendency_pressure >= 0.6 or play_is_pressure_answer else -6.0
             adjustment += add_reason(
                 reasons,
                 penalty,
                 "guardrail: screen does not naturally attack the sticks here",
             )
-        if box_label in {"heavy_box", "loaded_box"} and play_type in {"pass", "screen"}:
+        if true_screen and box_label in {"heavy_box", "loaded_box"} and play_type in {"pass", "screen"}:
             adjustment += add_reason(
                 reasons,
                 1.0,
                 "rerank: screen gains a small bump versus run-respecting boxes",
+            )
+        if not true_screen and down_distance_tag in {"third_long", "fourth_long"} and play_type == "rpo" and rpo_tag in {"bubble", "now"}:
+            adjustment += add_reason(
+                reasons,
+                -8.0,
+                "guardrail: bubble/now RPO is not a true third-long screen answer",
             )
 
     if (
