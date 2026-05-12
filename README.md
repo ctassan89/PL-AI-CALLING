@@ -1,6 +1,6 @@
 # PL-AI-CALLING
 
-PL-AI-CALLING is a football play-calling recommendation system. It maps a structured offensive playbook against game situation, defensive structure, and optional opponent tendencies, then returns ranked recommendations from the plays you actually carry.
+PL-AI-CALLING is a CSV-first football play-calling recommendation system. It maps a structured offensive playbook against game situation, defensive structure, and optional opponent tendencies, then returns ranked recommendations from the plays you actually carry.
 
 ## Current MVP
 
@@ -21,7 +21,14 @@ python3 -m pytest
 python3 scripts/validate_data.py
 ```
 
-## Main Commands
+## Validation And Test Commands
+
+```bash
+python3 scripts/validate_data.py
+python3 -m pytest
+```
+
+## Development Workflow
 
 ```bash
 python3 scripts/validate_data.py
@@ -32,7 +39,7 @@ python3 scripts/playcaller_session.py --top-n 5
 
 ## Standard Suggester
 
-Example:
+Use the standard CLI suggester to rank plays for one situation.
 
 ```bash
 python3 scripts/suggest_play.py \
@@ -55,6 +62,14 @@ Ranking happens in three passes:
 - The engine computes base football-fit scores from down/distance, field zone, defensive structure, pressure, and risk/reward.
 - It then applies lightweight contextual reranking adjustments, such as preferring play-action only in good play-action spots and de-emphasizing screens when pressure is not present.
 - It finishes with diversity penalties so the top recommendations are less likely to be filled with near-duplicate concepts across play-action variants or very similar formations.
+
+## Opponent Tendencies
+
+Opponent tendencies are optional and come from `data/opponent_tendencies.csv`. The sequential session and tendency audit tool can both use that file directly.
+
+```bash
+python3 scripts/audit_tendencies.py --opponent Rhinos
+```
 
 Coverage handling stays intentionally split:
 
@@ -94,17 +109,9 @@ Session behavior:
 - Defensive context persists until changed.
 - The session uses the same `build_situation(...)` and `recommend_plays(...)` functions as `scripts/suggest_play.py`.
 
-## Manual QA And Logging
+## Logging
 
-Manual sequential-drive smoke tests live in [tests/manual_drive_tests.md](/home/carlo/PL-AI-CALLING/PL-AI-CALLING/tests/manual_drive_tests.md).
-
-Run the tendency coverage audit:
-
-```bash
-python3 scripts/audit_tendencies.py --opponent Rhinos
-```
-
-Run the sequential session with an optional CSV log:
+Save a sequential session log with `--save-log`:
 
 ```bash
 python3 scripts/playcaller_session.py \
@@ -114,9 +121,11 @@ python3 scripts/playcaller_session.py \
   --save-log logs/rhinos_drive_01.csv
 ```
 
-Session log review still works through `scripts/view_session_log.py`, including called-play details from newer logs.
+The log keeps the displayed recommendations, called play details, gain, next state, and drive result.
 
 ## Viewing Session Logs
+
+Review saved logs with:
 
 ```bash
 python3 scripts/view_session_log.py logs/test_drive_01.csv
@@ -124,7 +133,11 @@ python3 scripts/view_session_log.py logs/test_drive_01.csv --compact
 python3 scripts/view_session_log.py logs/test_drive_01.csv --snap 3
 ```
 
-## Data Files
+## Manual QA
+
+Manual sequential-drive smoke tests live in [tests/manual_drive_tests.md](/home/carlo/PL-AI-CALLING/PL-AI-CALLING/tests/manual_drive_tests.md).
+
+## Data And Taxonomy Layout
 
 - `data/playbook.csv`: structured offensive inventory used for recommendations
 - `data/opponent_tendencies.csv`: optional opponent lookup table for tendency adjustments
