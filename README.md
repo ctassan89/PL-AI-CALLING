@@ -78,15 +78,18 @@ Initial situation:
 primo e 10 own 25 cover3 even box 6 personnel 10
 
 Then:
-3
+call 1 gain 7
 cover1 nickel blitz box 6
-5
+call Stick TREY gain 5
 q
 ```
 
 Session behavior:
 
-- Numeric input updates down, distance, and field position.
+- Called-play input uses `call ... gain ...`, for example `call 3 gain 8` or `call IZ Insert DOT gain 6`.
+- Displayed recommendation numbers are global across all shown blocks.
+- Exact play names are allowed if they exist in the playbook.
+- Numeric-only yard input is rejected.
 - Non-numeric input updates defensive context only.
 - Defensive context persists until changed.
 - The session uses the same `build_situation(...)` and `recommend_plays(...)` functions as `scripts/suggest_play.py`.
@@ -110,6 +113,8 @@ python3 scripts/playcaller_session.py \
   --top-n 5 \
   --save-log logs/rhinos_drive_01.csv
 ```
+
+Session log review still works through `scripts/view_session_log.py`, including called-play details from newer logs.
 
 ## Viewing Session Logs
 

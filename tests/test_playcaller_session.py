@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from scripts import playcaller_session
 from scripts.validate_data import PLAYBOOK_COLUMNS
@@ -90,8 +91,8 @@ def run_session(
     )
 
 
-def test_session_numeric_input_updates_offense_and_preserves_defense(tmp_path: Path) -> None:
-    """Numeric updates should move the ball without changing defensive context."""
+def test_session_numeric_only_input_is_rejected(tmp_path: Path) -> None:
+    """Numeric-only updates should no longer advance the drive."""
     playbook_path = tmp_path / "playbook.csv"
     write_csv(
         playbook_path,
@@ -112,7 +113,8 @@ def test_session_numeric_input_updates_offense_and_preserves_defense(tmp_path: P
 
     assert result.returncode == 0
     assert "Current situation: 1st & 10, own 25, own_territory | front=even, coverage=cover3, pressure=none, box=6, personnel=10" in result.stdout
-    assert "Current situation: 2nd & 7, own 28, own_territory | front=even, coverage=cover3, pressure=none, box=6, personnel=10" in result.stdout
+    assert "Please enter the called play and gain, e.g. call 3 gain 5" in result.stdout
+    assert "Current situation: 2nd & 7, own 28, own_territory | front=even, coverage=cover3, pressure=none, box=6, personnel=10" not in result.stdout
 
 
 def test_session_defense_update_preserves_offense(tmp_path: Path) -> None:
@@ -151,7 +153,7 @@ def test_session_missing_defense_context_uses_defaults(tmp_path: Path) -> None:
     write_csv(
         playbook_path,
         list(PLAYBOOK_COLUMNS),
-        [make_play("stick", "Stick TRIPS")],
+        [make_play("stick", "Stick TRIPS", personnel="11")],
     )
 
     result = run_session(playbook_path, "primo e 10 own 25\nq\n", "--top-n", "1")
@@ -188,10 +190,10 @@ def test_session_touchdown_stops_before_rendering_next_block(tmp_path: Path) -> 
     write_csv(
         playbook_path,
         list(PLAYBOOK_COLUMNS),
-        [make_play("stick", "Stick TRIPS")],
+        [make_play("stick", "Stick TRIPS", personnel="11")],
     )
 
-    result = run_session(playbook_path, "first and 1 opp 1 personnel 11\n1\n", "--top-n", "2")
+    result = run_session(playbook_path, "first and 1 opp 1 personnel 11\ncall Stick TRIPS gain 1\n", "--top-n", "2")
 
     assert result.returncode == 0
     assert "Drive ended: touchdown" in result.stdout
@@ -212,7 +214,7 @@ def test_session_save_log_creates_csv_with_completed_numeric_snap(tmp_path: Path
 
     result = run_session(
         playbook_path,
-        "primo e 10 own 25 cover3 even box 6 personnel 10\n3\nq\n",
+        "primo e 10 own 25 cover3 even box 6 personnel 10\ncall 1 gain 3\nq\n",
         "--top-n",
         "2",
         "--save-log",
@@ -231,6 +233,8 @@ def test_session_save_log_creates_csv_with_completed_numeric_snap(tmp_path: Path
     assert row["distance"] == "10"
     assert row["field_position_label"] == "own 25"
     assert row["yards_input"] == "3"
+    assert row["called_rank"] == "1"
+    assert row["called_from_recommendations"] == "yes"
     assert row["next_down"] == "2"
     assert row["next_distance"] == "7"
     assert row["next_yardline"] == "28"
@@ -249,7 +253,7 @@ def test_session_save_log_skips_pure_defense_updates(tmp_path: Path) -> None:
 
     result = run_session(
         playbook_path,
-        "primo e 10 own 25 cover3 even box 6 personnel 10\ncover1 nickel blitz box 6\n4\nq\n",
+        "primo e 10 own 25 cover3 even box 6 personnel 10\ncover1 nickel blitz box 6\ncall 1 gain 4\nq\n",
         "--top-n",
         "2",
         "--save-log",
@@ -277,7 +281,7 @@ def test_session_touchdown_is_logged_without_extra_recommendation_row(tmp_path: 
 
     result = run_session(
         playbook_path,
-        "first and 1 opp 1 personnel 11\n1\n",
+        "first and 1 opp 1 personnel 11\ncall 1 gain 1\n",
         "--top-n",
         "2",
         "--save-log",
@@ -305,13 +309,97 @@ def test_session_without_save_log_does_not_create_file(tmp_path: Path) -> None:
 
     result = run_session(
         playbook_path,
-        "primo e 10 own 25\n3\nq\n",
+        "primo e 10 own 25\ncall 1 gain 3\nq\n",
         "--top-n",
         "1",
     )
 
     assert result.returncode == 0
     assert not log_path.exists()
+
+
+def test_complete_pending_log_row_marks_non_displayed_valid_play_as_not_recommended() -> None:
+    """Completed log rows should record when a valid called play was not displayed."""
+    pending = {
+        "snap_number": 1,
+        "down": 1,
+        "distance": 10,
+        "field_position_label": "own 25",
+        "field_zone": "own_territory",
+    }
+    selection = playcaller_session.CalledPlaySelection(
+        raw_selector="Mesh DOT",
+        gain=5,
+        play_row=make_play("mesh", "Mesh DOT", personnel="11", pass_concept="mesh"),
+        called_from_recommendations=False,
+        called_rank=None,
+        called_block="",
+        called_score=None,
+    )
+    state = playcaller_session.GameState(down=2, distance=5, field_position=30)
+
+    row = playcaller_session.complete_pending_log_row(
+        pending,
+        selection,
+        state,
+        successful=True,
+        memory_notes="",
+    )
+
+    assert row is not None
+    assert row["called_play_name"] == "Mesh DOT"
+    assert row["called_from_recommendations"] == "no"
+
+
+def test_session_invalid_display_number_does_not_advance_or_log(tmp_path: Path) -> None:
+    """Invalid displayed numbers should not advance the drive or write a completed snap row."""
+    playbook_path = tmp_path / "playbook.csv"
+    log_path = tmp_path / "logs" / "drive.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TREY", personnel="11")],
+    )
+
+    result = run_session(
+        playbook_path,
+        "first and 10 own 25 personnel 11\ncall 9 gain 5\nq\n",
+        "--top-n",
+        "2",
+        "--save-log",
+        str(log_path),
+    )
+
+    assert result.returncode == 0
+    assert "No displayed recommendation numbered 9" in result.stdout
+    with log_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows == []
+
+
+def test_session_drive_summary_prints_on_quit(tmp_path: Path) -> None:
+    """Quitting a drive should print a compact called-play summary."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play("run", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", personnel="11", tags="inside_run;gap_scheme;physical_run"),
+            make_play("pass", "Stick TREY", personnel="11", tags="quick_game;safe_conversion"),
+        ],
+    )
+
+    result = run_session(
+        playbook_path,
+        "first and 10 own 25 personnel 11\ncall 1 gain 7\nq\n",
+        "--top-n",
+        "2",
+    )
+
+    assert result.returncode == 0
+    assert "Drive summary:" in result.stdout
+    assert "- result: quit" in result.stdout
+    assert "- snaps: 1" in result.stdout
 
 
 def test_session_first_and_ten_uses_run_rpo_pass_blocks(tmp_path: Path) -> None:
@@ -354,6 +442,152 @@ def test_session_second_short_uses_shot_safe_rpo_blocks(tmp_path: Path) -> None:
     assert "Shot play options:" in result.stdout
     assert "Safe conversion options:" in result.stdout
     assert "RPO conflict options:" in result.stdout
+
+
+def test_session_uses_global_numbering_across_blocks(tmp_path: Path) -> None:
+    """Displayed recommendations should use one global numbering sequence across blocks."""
+    playbook_path = tmp_path / "playbook.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [
+            make_play("run1", "Duo", play_type="run", play_family="run", run_scheme="duo", pass_concept="none", personnel="11", tags="inside_run;gap_scheme;physical_run"),
+            make_play("run2", "Outside Zone", play_type="run", play_family="run", run_scheme="outside_zone", pass_concept="none", personnel="11", tags="zone_run;perimeter_run"),
+            make_play("rpo1", "Power RPO Stick", play_type="rpo", play_family="rpo", run_scheme="power", rpo_tag="stick", pass_concept="stick", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion"),
+            make_play("rpo2", "Insert RPO Quick Out", play_type="rpo", play_family="rpo", run_scheme="inside_zone", run_modifier="insert", rpo_tag="quick_out", pass_concept="quick_out", personnel="11", tags="rpo;quick_game;conflict_call;safe_conversion;quick_access"),
+            make_play("pass1", "Stick TREY", pass_concept="stick", personnel="11", tags="quick_game;safe_conversion"),
+            make_play("pass2", "Hitch DOT", pass_concept="hitch", personnel="11", tags="quick_game;safe_conversion"),
+        ],
+    )
+
+    result = run_session(playbook_path, "first and 10 own 25 personnel 11\nq\n", "--top-n", "5", "--block-size", "2")
+
+    assert result.returncode == 0
+    assert "Run options:" in result.stdout
+    assert "1. " in result.stdout
+    assert "2. " in result.stdout
+    assert "RPO options:" in result.stdout
+    assert "3. " in result.stdout
+    assert "4. " in result.stdout
+    assert "Pass options:" in result.stdout
+    assert "5. " in result.stdout
+    assert "6. " in result.stdout
+
+
+def test_parse_call_and_gain_supports_number_and_name_inputs() -> None:
+    """Called-play input parsing should accept numbered and named selectors."""
+    assert playcaller_session.parse_call_and_gain("call 3 gain 8") == ("3", 8)
+    assert playcaller_session.parse_call_and_gain("call 3 gain -2") == ("3", -2)
+    assert playcaller_session.parse_call_and_gain("call IZ Insert DOT gain 6") == (
+        "IZ Insert DOT",
+        6,
+    )
+
+
+def test_resolve_called_play_by_number_name_and_personnel_guard() -> None:
+    """Called-play resolution should support displayed numbers, names, and personnel checks."""
+    playbook = pd.DataFrame(
+        [
+            make_play("stick11", "Stick TREY", personnel="11"),
+            make_play("stick10", "Stick TRIPS", personnel="10"),
+        ]
+    )
+    rows = playcaller_session.load_play_rows(playbook)
+    displayed = {
+        1: playcaller_session.DisplayedRecommendation(
+            display_number=1,
+            block_name="Pass options",
+            play_id="stick11",
+            play_name="Stick TREY",
+            score=61.0,
+            recommendation={"play_id": "stick11", "play_name": "Stick TREY", "score": 61.0},
+        )
+    }
+
+    by_number = playcaller_session.resolve_called_play(
+        "1",
+        playbook_rows=rows,
+        displayed_lookup=displayed,
+        current_personnel="11",
+    )
+    assert by_number.called_from_recommendations is True
+    assert by_number.called_rank == 1
+    assert by_number.called_block == "Pass options"
+
+    by_name = playcaller_session.resolve_called_play(
+        "stick trey",
+        playbook_rows=rows,
+        displayed_lookup=displayed,
+        current_personnel="11",
+    )
+    assert str(by_name.play_row.get("play_id")) == "stick11"
+
+    with pytest.raises(ValueError, match="does not match current personnel"):
+        playcaller_session.resolve_called_play(
+            "Stick TRIPS",
+            playbook_rows=rows,
+            displayed_lookup=displayed,
+            current_personnel="11",
+        )
+
+
+def test_resolve_called_play_reports_ambiguous_and_unknown_names() -> None:
+    """Helpful errors should be shown for ambiguous or unknown called play names."""
+    playbook = pd.DataFrame(
+        [
+            make_play("stick1", "Stick TREY", personnel="11"),
+            make_play("stick2", "Stick DOT", personnel="11"),
+            make_play("mesh", "Mesh DOT", personnel="11", pass_concept="mesh"),
+        ]
+    )
+    rows = playcaller_session.load_play_rows(playbook)
+
+    with pytest.raises(ValueError, match="Possible matches"):
+        playcaller_session.resolve_called_play(
+            "Stick",
+            playbook_rows=rows,
+            displayed_lookup={},
+            current_personnel="11",
+        )
+
+    with pytest.raises(ValueError, match="Play not found in playbook: Sluggo"):
+        playcaller_session.resolve_called_play(
+            "Sluggo",
+            playbook_rows=rows,
+            displayed_lookup={},
+            current_personnel="11",
+        )
+
+
+def test_non_displayed_but_valid_play_name_is_accepted() -> None:
+    """Exact play-name calls should work even when the play was not displayed this snap."""
+    playbook = pd.DataFrame(
+        [
+            make_play("stick", "Stick TREY", personnel="11"),
+            make_play("mesh", "Mesh DOT", personnel="11", pass_concept="mesh"),
+        ]
+    )
+    rows = playcaller_session.load_play_rows(playbook)
+    displayed = {
+        1: playcaller_session.DisplayedRecommendation(
+            display_number=1,
+            block_name="Pass options",
+            play_id="stick",
+            play_name="Stick TREY",
+            score=61.0,
+            recommendation={"play_id": "stick", "play_name": "Stick TREY", "score": 61.0},
+        )
+    }
+
+    selection = playcaller_session.resolve_called_play(
+        "Mesh DOT",
+        playbook_rows=rows,
+        displayed_lookup=displayed,
+        current_personnel="11",
+    )
+
+    assert str(selection.play_row.get("play_id")) == "mesh"
+    assert selection.called_from_recommendations is False
 
 
 def test_session_avoids_duplicate_play_ids_across_blocks_when_possible() -> None:
@@ -613,8 +847,10 @@ def test_session_passes_tendencies_into_recommend_plays(monkeypatch: object) -> 
         tendencies: object = None,
         top_n: int = 3,
         intent: str = "balanced",
+        drive_memory: object = None,
     ) -> list[dict[str, object]]:
         captured["tendencies"] = tendencies
+        captured["drive_memory"] = drive_memory
         return [{"play_name": "Stub Call", "score": 50.0, "reasons": []}]
 
     monkeypatch.setattr(playcaller_session, "recommend_plays", fake_recommend_plays)
@@ -643,9 +879,11 @@ def test_session_passes_tendencies_into_recommend_plays(monkeypatch: object) -> 
         defense_state,
         args=args,
         analyzer=analyzer,
+        drive_context=playcaller_session.DriveContext(),
     )
 
     assert captured["tendencies"] is not None
+    assert captured["drive_memory"] is not None
 
 
 def test_format_matched_tendency_bucket_uses_only_matched_keys() -> None:

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections import Counter
 from datetime import datetime
 from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
+import re
 import sys
+from typing import Any
 
 import pandas as pd
 
@@ -62,6 +65,22 @@ SESSION_LOG_COLUMNS = [
     "top_recommendations",
     "displayed_recommendations",
     "recommendation_blocks",
+    "called_play_input",
+    "called_play_id",
+    "called_play_name",
+    "called_block",
+    "called_from_recommendations",
+    "called_rank",
+    "called_score",
+    "called_play_type",
+    "called_run_scheme",
+    "called_pass_concept",
+    "called_rpo_tag",
+    "called_play_action",
+    "called_personnel",
+    "called_tags",
+    "play_success",
+    "drive_memory_notes",
     "yards_input",
     "next_down",
     "next_distance",
@@ -87,6 +106,26 @@ class DriveContext:
     """Track lightweight prior-play context for the sequential session."""
 
     previous_gain: int | None = None
+    recent_play_ids: list[str] = None  # type: ignore[assignment]
+    recent_main_concepts: list[str] = None  # type: ignore[assignment]
+    recent_pass_concepts: list[str] = None  # type: ignore[assignment]
+    recent_run_schemes: list[str] = None  # type: ignore[assignment]
+    recent_rpo_tags: list[str] = None  # type: ignore[assignment]
+    recent_play_types: list[str] = None  # type: ignore[assignment]
+    recent_gains: list[int] = None  # type: ignore[assignment]
+    recent_successes: list[bool] = None  # type: ignore[assignment]
+    play_action_boost_window: int = 0
+    previous_run_like_gain: int = 0
+
+    def __post_init__(self) -> None:
+        self.recent_play_ids = []
+        self.recent_main_concepts = []
+        self.recent_pass_concepts = []
+        self.recent_run_schemes = []
+        self.recent_rpo_tags = []
+        self.recent_play_types = []
+        self.recent_gains = []
+        self.recent_successes = []
 
     def apply_gain(self, gain: int) -> None:
         """Store the most recent numeric gain/loss."""
@@ -97,6 +136,128 @@ class DriveContext:
         if self.previous_gain is None:
             return {}
         return {"previous_gain": self.previous_gain}
+
+    def as_drive_memory(self) -> dict[str, object]:
+        """Expose lightweight sequential memory for optional session-only reranking."""
+        return {
+            "recent_main_concepts": list(self.recent_main_concepts),
+            "recent_pass_concepts": list(self.recent_pass_concepts),
+            "recent_run_schemes": list(self.recent_run_schemes),
+            "recent_rpo_tags": list(self.recent_rpo_tags),
+            "play_action_boost_window": self.play_action_boost_window,
+            "previous_run_like_gain": self.previous_run_like_gain,
+        }
+
+    def note_called_play(
+        self,
+        play: Mapping[str, object],
+        *,
+        gain: int,
+        successful: bool,
+    ) -> str:
+        """Update the lightweight sequencing memory after a called play."""
+        play_series = pd.Series(play)
+        tags = infer_play_tags(play_series)
+        play_id = normalize_text(play.get("play_id"))
+        play_type = normalize_text(play.get("play_type"))
+        pass_concept = normalize_text(play.get("pass_concept"))
+        run_scheme = normalize_text(play.get("run_scheme"))
+        rpo_tag = normalize_text(play.get("rpo_tag"))
+        main_concept = concept_group_key(play_series)
+        memory_notes: list[str] = []
+
+        self.apply_gain(gain)
+        self._push(self.recent_play_ids, play_id)
+        self._push(self.recent_main_concepts, main_concept)
+        self._push(self.recent_pass_concepts, pass_concept)
+        self._push(self.recent_run_schemes, run_scheme)
+        self._push(self.recent_rpo_tags, rpo_tag)
+        self._push(self.recent_play_types, play_type)
+        self._push_numeric(self.recent_gains, gain)
+        self._push_boolean(self.recent_successes, successful)
+
+        run_like = play_type == "run" or (
+            play_type == "rpo"
+            and bool({"inside_run", "gap_scheme", "zone_run", "physical_run", "short_yardage_run"} & tags)
+        )
+        if run_like:
+            self.previous_run_like_gain = gain
+            if gain >= 7:
+                self.play_action_boost_window = 2
+                memory_notes.append("pa_boost=strong")
+            elif gain >= 4:
+                self.play_action_boost_window = 1
+                memory_notes.append("pa_boost=light")
+            else:
+                self.play_action_boost_window = 0
+        elif self.play_action_boost_window > 0:
+            self.play_action_boost_window -= 1
+            if self.play_action_boost_window == 0:
+                memory_notes.append("pa_boost=expired")
+
+        if main_concept and self.recent_main_concepts.count(main_concept) > 1:
+            memory_notes.append(f"repeat={main_concept}")
+        return "; ".join(memory_notes)
+
+    @staticmethod
+    def _push(bucket: list[str], value: str, *, limit: int = 3) -> None:
+        if value:
+            bucket.insert(0, value)
+            del bucket[limit:]
+
+    @staticmethod
+    def _push_numeric(bucket: list[int], value: int, *, limit: int = 3) -> None:
+        bucket.insert(0, value)
+        del bucket[limit:]
+
+    @staticmethod
+    def _push_boolean(bucket: list[bool], value: bool, *, limit: int = 3) -> None:
+        bucket.insert(0, value)
+        del bucket[limit:]
+
+
+@dataclass(frozen=True)
+class DisplayedRecommendation:
+    """Metadata for one displayed recommendation line."""
+
+    display_number: int
+    block_name: str
+    play_id: str
+    play_name: str
+    score: float
+    recommendation: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class CalledPlaySelection:
+    """Resolved called-play selection for a completed snap."""
+
+    raw_selector: str
+    gain: int
+    play_row: Mapping[str, object]
+    called_from_recommendations: bool
+    called_rank: int | None
+    called_block: str
+    called_score: float | None
+
+
+@dataclass
+class DriveSummary:
+    """Track compact end-of-drive summary totals."""
+
+    snaps: int = 0
+    total_yards: int = 0
+    run_calls: int = 0
+    rpo_calls: int = 0
+    pass_calls: int = 0
+    play_action_calls: int = 0
+    screen_calls: int = 0
+    successful_plays: int = 0
+    explosive_plays: int = 0
+    concept_counts: Counter[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        self.concept_counts = Counter()
 
 
 @dataclass
@@ -224,6 +385,27 @@ def normalize_text_for_log(value: object) -> str:
 def csv_flag(value: bool) -> str:
     """Serialize a boolean to a simple yes/no token."""
     return "yes" if value else "no"
+
+
+def parse_call_and_gain(raw_input: str) -> tuple[str, int]:
+    """Parse the required `call ... gain ...` session input format."""
+    stripped = raw_input.strip()
+    if re.fullmatch(r"[+-]?\d+", stripped):
+        raise ValueError("Please enter the called play and gain, e.g. call 3 gain 5")
+    if not stripped.lower().startswith("call "):
+        raise ValueError("called play input must start with 'call' and include 'gain'")
+    match = re.fullmatch(r"call\s+(.+?)\s+gain\s+([+-]?\d+)\s*", stripped, re.IGNORECASE)
+    if match is None:
+        raise ValueError("Please enter the called play and gain, e.g. call 3 gain 5")
+    selector = match.group(1).strip()
+    if not selector:
+        raise ValueError("Please enter the called play and gain, e.g. call 3 gain 5")
+    return selector, int(match.group(2))
+
+
+def normalized_name(value: object) -> str:
+    """Normalize a play name or free-form selector for matching."""
+    return " ".join(normalize_text(value).lower().split())
 
 
 def normalize_tendency_distance_bucket_for_session(state: GameState) -> str:
@@ -375,6 +557,19 @@ def serialize_top_recommendations(
     )
 
 
+def serialize_displayed_recommendations(
+    displayed_lookup: Mapping[int, DisplayedRecommendation],
+    *,
+    limit: int,
+) -> str:
+    """Serialize the globally displayed numbered recommendations exactly as shown."""
+    ordered = [displayed_lookup[number] for number in sorted(displayed_lookup)[:limit]]
+    return "; ".join(
+        f"{entry.display_number}. {entry.play_name} ({entry.score:.1f})"
+        for entry in ordered
+    )
+
+
 def serialize_recommendation_blocks(
     recommendation_groups: list[tuple[str, list[Mapping[str, object]]]],
 ) -> str:
@@ -400,6 +595,7 @@ def build_session_log_row(
     args: argparse.Namespace,
     tendency_metadata: dict[str, object] | None,
     recommendation_groups: list[tuple[str, list[Mapping[str, object]]]],
+    displayed_lookup: Mapping[int, DisplayedRecommendation],
     tendencies: TendencySnapshot | None,
 ) -> dict[str, object]:
     """Build the pending log row for the current recommendation step."""
@@ -434,11 +630,27 @@ def build_session_log_row(
             recommendation_groups,
             limit=args.top_n,
         ),
-        "displayed_recommendations": serialize_top_recommendations(
-            recommendation_groups,
-            limit=args.top_n,
+        "displayed_recommendations": serialize_displayed_recommendations(
+            displayed_lookup,
+            limit=max(len(displayed_lookup), args.top_n),
         ),
         "recommendation_blocks": serialize_recommendation_blocks(recommendation_groups),
+        "called_play_input": "",
+        "called_play_id": "",
+        "called_play_name": "",
+        "called_block": "",
+        "called_from_recommendations": "",
+        "called_rank": "",
+        "called_score": "",
+        "called_play_type": "",
+        "called_run_scheme": "",
+        "called_pass_concept": "",
+        "called_rpo_tag": "",
+        "called_play_action": "",
+        "called_personnel": "",
+        "called_tags": "",
+        "play_success": "",
+        "drive_memory_notes": "",
         "yards_input": "",
         "next_down": "",
         "next_distance": "",
@@ -455,6 +667,7 @@ def build_recommendation_groups(
     top_n: int,
     block_size: int | None = None,
     intent: str,
+    drive_memory: Mapping[str, object] | None = None,
 ) -> list[tuple[str, list[Mapping[str, object]]]]:
     """Build situational recommendation blocks or a fallback unified list."""
     block_specs = choose_output_blocks(situation)
@@ -475,6 +688,7 @@ def build_recommendation_groups(
                     tendencies=tendencies,
                     top_n=top_n,
                     intent=intent,
+                    drive_memory=drive_memory,
                 ),
             )
         ]
@@ -488,6 +702,7 @@ def build_recommendation_groups(
             tendencies=tendencies,
             top_n=pool_size,
             intent=pool_intent,
+            drive_memory=drive_memory,
         )
         for pool_intent in {spec.intent for spec in block_specs}
     }
@@ -518,6 +733,7 @@ def build_recommendation_groups(
                 tendencies=tendencies,
                 top_n=top_n,
                 intent=intent,
+                drive_memory=drive_memory,
             ),
         )
     ]
@@ -542,6 +758,122 @@ def load_play_rows(playbook: pd.DataFrame) -> dict[str, dict[str, object]]:
         str(row.get("play_id", "")): {str(column): row.get(column, "") for column in row.index}
         for _, row in playbook.iterrows()
     }
+
+
+def displayed_recommendation_lookup(
+    recommendation_groups: list[tuple[str, list[Mapping[str, object]]]],
+) -> dict[int, DisplayedRecommendation]:
+    """Build the global display-number mapping for the current recommendation step."""
+    lookup: dict[int, DisplayedRecommendation] = {}
+    display_number = 1
+    for heading, recommendations in recommendation_groups:
+        block_name = heading.rstrip(":")
+        for recommendation in recommendations:
+            lookup[display_number] = DisplayedRecommendation(
+                display_number=display_number,
+                block_name=block_name,
+                play_id=str(recommendation.get("play_id", "")),
+                play_name=str(recommendation.get("play_name", "")),
+                score=float(recommendation.get("score", 0.0)),
+                recommendation=recommendation,
+            )
+            display_number += 1
+    return lookup
+
+
+def resolve_called_play_by_name(
+    playbook_rows: Mapping[str, Mapping[str, object]],
+    selector: str,
+) -> Mapping[str, object]:
+    """Resolve a called play by exact name, or raise a helpful ValueError."""
+    normalized_selector = normalized_name(selector)
+    exact_matches = [
+        row
+        for row in playbook_rows.values()
+        if normalized_name(row.get("play_name", "")) == normalized_selector
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if len(exact_matches) > 1:
+        matches = "\n".join(f"- {row.get('play_name', '')}" for row in exact_matches)
+        raise ValueError(
+            f"Ambiguous play name: {selector}\nPossible matches:\n{matches}\nUse the displayed number or exact play name."
+        )
+
+    partial_matches = [
+        row
+        for row in playbook_rows.values()
+        if normalized_selector and normalized_selector in normalized_name(row.get("play_name", ""))
+    ]
+    if partial_matches:
+        matches = "\n".join(f"- {row.get('play_name', '')}" for row in partial_matches)
+        if len(partial_matches) > 1:
+            raise ValueError(
+                f"Ambiguous play name: {selector}\nPossible matches:\n{matches}\nUse the displayed number or exact play name."
+            )
+        raise ValueError(
+            f"Play not found in playbook: {selector}\nPossible matches:\n{matches}\nUse a displayed number or an exact play name."
+        )
+    raise ValueError(f"Play not found in playbook: {selector}")
+
+
+def resolve_called_play(
+    selector: str,
+    *,
+    playbook_rows: Mapping[str, Mapping[str, object]],
+    displayed_lookup: Mapping[int, DisplayedRecommendation],
+    current_personnel: str,
+) -> CalledPlaySelection:
+    """Resolve a called play selector by displayed number or exact play name."""
+    selector_text = selector.strip()
+    display_match: DisplayedRecommendation | None = None
+    if re.fullmatch(r"\d+", selector_text):
+        display_number = int(selector_text)
+        display_match = displayed_lookup.get(display_number)
+        if display_match is None:
+            raise ValueError(
+                f"No displayed recommendation numbered {display_number}. Use one of the displayed numbers or an exact play name."
+            )
+        play_row = playbook_rows.get(display_match.play_id, display_match.recommendation)
+    else:
+        play_row = resolve_called_play_by_name(playbook_rows, selector_text)
+        play_id = str(play_row.get("play_id", ""))
+        for candidate in displayed_lookup.values():
+            if candidate.play_id == play_id:
+                display_match = candidate
+                break
+
+    play_personnel = normalize_text(play_row.get("personnel"))
+    if current_personnel and play_personnel and current_personnel != play_personnel:
+        raise ValueError(
+            "Play exists but does not match current personnel.\n"
+            f"Current personnel: {current_personnel}\n"
+            f"Play personnel: {play_personnel}\n"
+            "Change personnel first or choose a matching play."
+        )
+
+    return CalledPlaySelection(
+        raw_selector=selector_text,
+        gain=0,
+        play_row=play_row,
+        called_from_recommendations=display_match is not None,
+        called_rank=display_match.display_number if display_match is not None else None,
+        called_block=display_match.block_name if display_match is not None else "",
+        called_score=display_match.score if display_match is not None else None,
+    )
+
+
+def called_play_selection_with_gain(selection: CalledPlaySelection, gain: int) -> CalledPlaySelection:
+    """Return the resolved selection with the parsed gain attached."""
+    return CalledPlaySelection(
+        raw_selector=selection.raw_selector,
+        gain=gain,
+        play_row=selection.play_row,
+        called_from_recommendations=selection.called_from_recommendations,
+        called_rank=selection.called_rank,
+        called_block=selection.called_block,
+        called_score=selection.called_score,
+    )
 
 
 def classify_play(play: Mapping[str, object]) -> set[str]:
@@ -822,13 +1154,16 @@ def build_recommendation_payload(
         top_n=args.top_n,
         block_size=getattr(args, "block_size", args.top_n),
         intent=args.intent,
+        drive_memory=(drive_context.as_drive_memory() if drive_context is not None else None),
     )
+    displayed_lookup = displayed_recommendation_lookup(recommendation_groups)
     return {
         "situation": situation,
         "tendencies": tendencies,
         "tendency_reason": tendency_reason,
         "tendency_metadata": tendency_metadata,
         "recommendation_groups": recommendation_groups,
+        "displayed_lookup": displayed_lookup,
     }
 
 
@@ -846,13 +1181,17 @@ def print_recommendation_payload(
     )
     recommendation_groups = payload["recommendation_groups"]
     assert isinstance(recommendation_groups, list)
+    displayed_lookup = payload["displayed_lookup"]
+    assert isinstance(displayed_lookup, dict)
+    display_number = 1
     for heading, recommendations in recommendation_groups:
         print(heading)
-        for index, play in enumerate(recommendations[: args.top_n], start=1):
-            print(f"{index}. {play['play_name']} | score={float(play['score']):.2f}")
+        for play in recommendations[: args.top_n]:
+            print(f"{display_number}. {play['play_name']} | score={float(play['score']):.2f}")
             if args.show_reasons:
                 reasons = "; ".join(play["reasons"]) if play["reasons"] else "no positive matches"
                 print(f"   reasons: {reasons}")
+            display_number += 1
         print()
 
 
@@ -888,22 +1227,73 @@ def prompt_initial_state() -> tuple[GameState, DefenseState]:
             print(exc)
 
 
-def apply_session_update(
-    raw_input: str,
-    state: GameState,
-    defense_state: DefenseState,
-    drive_context: DriveContext | None = None,
-) -> tuple[GameState, DefenseState]:
-    """Apply either a yardage update or a defensive-context update."""
-    try:
-        gain = int(raw_input)
-    except ValueError:
-        return state, parse_defense_update(raw_input, defense_state)
+def is_play_success(*, down: int, distance: int, gain: int) -> bool:
+    """Apply simple success rules for logging and drive summary."""
+    if down == 1:
+        return gain >= 4
+    if down == 2:
+        return gain * 2 >= distance
+    return gain >= distance
 
-    state.apply_gain(gain)
-    if drive_context is not None:
-        drive_context.apply_gain(gain)
-    return state, defense_state
+
+def is_explosive_play(play: Mapping[str, object], gain: int) -> bool:
+    """Return whether a gain counts as explosive for summary reporting."""
+    play_type = normalize_text(play.get("play_type"))
+    if play_type in {"run", "rpo"}:
+        return gain >= 10
+    return gain >= 15
+
+
+def update_drive_summary(summary: DriveSummary, play: Mapping[str, object], *, gain: int, successful: bool) -> None:
+    """Accumulate end-of-drive summary counters."""
+    play_series = pd.Series(play)
+    tags = infer_play_tags(play_series)
+    play_type = normalize_text(play.get("play_type"))
+    play_action = normalize_text(play.get("play_action")) in {"true", "yes"}
+    concept = concept_group_key(play_series)
+
+    summary.snaps += 1
+    summary.total_yards += gain
+    if play_type == "run":
+        summary.run_calls += 1
+    elif play_type == "rpo":
+        summary.rpo_calls += 1
+    elif play_type == "pass":
+        summary.pass_calls += 1
+    if play_action:
+        summary.play_action_calls += 1
+    if "screen" in tags or "true_screen" in tags or normalize_text(play.get("pass_concept")) in {"screen", "screens", "rb_screen", "wr_tunnel_screen"}:
+        summary.screen_calls += 1
+    if successful:
+        summary.successful_plays += 1
+    if is_explosive_play(play, gain):
+        summary.explosive_plays += 1
+    if concept:
+        summary.concept_counts[concept] += 1
+
+
+def format_drive_summary(summary: DriveSummary, result: str) -> str:
+    """Render the compact drive summary."""
+    repeated = ", ".join(
+        f"{concept} x{count}"
+        for concept, count in summary.concept_counts.items()
+        if count > 1
+    )
+    lines = [
+        "Drive summary:",
+        f"- result: {result}",
+        f"- snaps: {summary.snaps}",
+        f"- total yards: {summary.total_yards}",
+        f"- run calls: {summary.run_calls}",
+        f"- RPO calls: {summary.rpo_calls}",
+        f"- pass calls: {summary.pass_calls}",
+        f"- play-action calls: {summary.play_action_calls}",
+        f"- screen calls: {summary.screen_calls}",
+        f"- successful plays: {summary.successful_plays}/{summary.snaps}",
+        f"- explosive plays: {summary.explosive_plays}",
+        f"- repeated concepts: {repeated or 'none'}",
+    ]
+    return "\n".join(lines)
 
 
 def create_session_log_writer(args: argparse.Namespace) -> SessionLogWriter | None:
@@ -916,14 +1306,35 @@ def create_session_log_writer(args: argparse.Namespace) -> SessionLogWriter | No
 
 def complete_pending_log_row(
     pending_row: dict[str, object] | None,
-    raw_input: str,
+    selection: CalledPlaySelection,
     state: GameState,
+    *,
+    successful: bool,
+    memory_notes: str,
 ) -> dict[str, object] | None:
-    """Update a pending log row once a numeric yardage input is processed."""
+    """Update a pending log row once a called play and gain are processed."""
     if pending_row is None:
         return None
     row = dict(pending_row)
-    row["yards_input"] = raw_input
+    play_row = selection.play_row
+    play_series = pd.Series(play_row)
+    row["called_play_input"] = selection.raw_selector
+    row["called_play_id"] = play_row.get("play_id", "")
+    row["called_play_name"] = play_row.get("play_name", "")
+    row["called_block"] = selection.called_block
+    row["called_from_recommendations"] = csv_flag(selection.called_from_recommendations)
+    row["called_rank"] = "" if selection.called_rank is None else selection.called_rank
+    row["called_score"] = "" if selection.called_score is None else f"{selection.called_score:.2f}"
+    row["called_play_type"] = play_row.get("play_type", "")
+    row["called_run_scheme"] = play_row.get("run_scheme", "")
+    row["called_pass_concept"] = play_row.get("pass_concept", "")
+    row["called_rpo_tag"] = play_row.get("rpo_tag", "")
+    row["called_play_action"] = play_row.get("play_action", "")
+    row["called_personnel"] = play_row.get("personnel", "")
+    row["called_tags"] = ";".join(sorted(infer_play_tags(play_series)))
+    row["play_success"] = csv_flag(successful)
+    row["drive_memory_notes"] = memory_notes
+    row["yards_input"] = selection.gain
     row["next_down"] = state.down
     row["next_distance"] = state.distance
     row["next_yardline"] = state.field_position
@@ -936,12 +1347,20 @@ def main() -> None:
     """Run an interactive sequence of recommendations and updates."""
     args = parse_args()
     playbook = pd.read_csv(Path(args.playbook_path))
+    playbook_rows = load_play_rows(playbook)
     analyzer, _ = load_tendency_analyzer(args)
     state, defense_state = prompt_initial_state()
     drive_context = DriveContext()
+    drive_summary = DriveSummary()
     log_writer = create_session_log_writer(args)
     snap_number = 1
     pending_log_row: dict[str, object] | None = None
+    hint_printed = False
+
+    def finish_session(result: str) -> None:
+        if result != "quit":
+            print(f"Drive ended: {result}")
+        print(format_drive_summary(drive_summary, result))
 
     try:
         while True:
@@ -955,6 +1374,9 @@ def main() -> None:
                 drive_context=drive_context,
             )
             print_recommendation_payload(payload, args=args)
+            if not hint_printed:
+                print("Examples: call 3 gain 8 | call Stick TREY gain 5 | personnel 11 front odd_tite box 8\n")
+                hint_printed = True
 
             if log_writer is not None:
                 pending_log_row = build_session_log_row(
@@ -965,43 +1387,75 @@ def main() -> None:
                     args=args,
                     tendency_metadata=payload["tendency_metadata"],
                     recommendation_groups=payload["recommendation_groups"],
+                    displayed_lookup=payload["displayed_lookup"],
                     tendencies=payload["tendencies"],
                 )
 
             if state.status != "active":
-                print(f"Drive ended: {state.status}")
+                finish_session(state.status)
                 return
 
-            raw_update = input("Yards gained/lost or defense update: ").strip()
+            raw_update = input("Called play + gain, or defense update: ").strip()
             if raw_update.lower() in {"q", "quit", "exit"}:
+                finish_session("quit")
                 return
 
             try:
-                state, defense_state = apply_session_update(
-                    raw_update,
-                    state,
-                    defense_state,
-                    drive_context,
+                selector, gain = parse_call_and_gain(raw_update)
+            except ValueError as exc:
+                message = str(exc)
+                if "called play" in message or "must start" in message:
+                    try:
+                        defense_state = parse_defense_update(raw_update, defense_state)
+                        pending_log_row = None
+                        continue
+                    except ValueError:
+                        print(message)
+                        continue
+                print(message)
+                continue
+
+            try:
+                selection = resolve_called_play(
+                    selector,
+                    playbook_rows=playbook_rows,
+                    displayed_lookup=payload["displayed_lookup"],
+                    current_personnel=normalize_text(defense_state.personnel),
                 )
+                selection = called_play_selection_with_gain(selection, gain)
             except ValueError as exc:
                 print(exc)
                 continue
 
-            try:
-                gain = int(raw_update)
-            except ValueError:
-                pending_log_row = None
-                continue
+            successful = is_play_success(down=state.down, distance=state.distance, gain=gain)
+            state.apply_gain(gain)
+            memory_notes = drive_context.note_called_play(
+                selection.play_row,
+                gain=gain,
+                successful=successful,
+            )
+            update_drive_summary(
+                drive_summary,
+                selection.play_row,
+                gain=gain,
+                successful=successful,
+            )
 
             if log_writer is not None:
-                completed_row = complete_pending_log_row(pending_log_row, str(gain), state)
+                completed_row = complete_pending_log_row(
+                    pending_log_row,
+                    selection,
+                    state,
+                    successful=successful,
+                    memory_notes=memory_notes,
+                )
                 if completed_row is not None:
                     log_writer.write_row(completed_row)
             pending_log_row = None
             snap_number += 1
 
             if state.status != "active":
-                print(f"Drive ended: {state.status}")
+                finish_session(state.status)
                 return
     finally:
         if log_writer is not None:

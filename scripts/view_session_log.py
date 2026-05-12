@@ -76,6 +76,16 @@ def format_situation(row: dict[str, str]) -> str:
     )
 
 
+def compact_called_name(row: dict[str, str], *, max_length: int = 22) -> str:
+    """Return a readable compact called-play label when present."""
+    name = clean_csv_value(row.get("called_play_name"))
+    if not name:
+        return "-"
+    if len(name) <= max_length:
+        return name
+    return name[: max_length - 3].rstrip() + "..."
+
+
 def format_next_situation(row: dict[str, str]) -> str:
     """Format the next snap situation after the recorded gain."""
     next_down = clean_csv_value(row.get("next_down"))
@@ -199,6 +209,22 @@ def render_result(row: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def render_called_section(row: dict[str, str]) -> str:
+    """Render called-play details when the log contains them."""
+    play_name = clean_csv_value(row.get("called_play_name"))
+    if not play_name:
+        return ""
+    lines = [
+        "Called:",
+        f"- play: {clean_value(row.get('called_play_name'))}",
+        f"- block: {clean_value(row.get('called_block'))}",
+        f"- rank: {clean_value(row.get('called_rank'))}",
+        f"- from recommendations: {clean_value(row.get('called_from_recommendations'))}",
+        f"- success: {clean_value(row.get('play_success'))}",
+    ]
+    return "\n".join(lines)
+
+
 def render_full_snap(
     row: dict[str, str],
     *,
@@ -222,6 +248,10 @@ def render_full_snap(
     if not no_recommendations:
         lines.append(render_recommendations(row, show_top=show_top) or "Recommendations: -")
         lines.append("")
+    called = render_called_section(row)
+    if called:
+        lines.append(called)
+        lines.append("")
     lines.append("Result:")
     lines.append(render_result(row))
     if show_raw:
@@ -237,6 +267,7 @@ def compact_summary_row(row: dict[str, str]) -> dict[str, str]:
         "Snap": clean_value(row.get("snap_number")),
         "Situation": format_situation(row),
         "Personnel": clean_value(row.get("personnel")),
+        "Called": compact_called_name(row),
         "Gain": format_gain(clean_csv_value(row.get("yards_input"))),
         "Next": format_next_situation(row),
         "Fallback": clean_value(row.get("tendency_fallback_used")),
@@ -247,7 +278,7 @@ def compact_summary_row(row: dict[str, str]) -> dict[str, str]:
 def render_compact(rows: list[dict[str, str]]) -> str:
     """Render a compact table-like drive summary."""
     summary_rows = [compact_summary_row(row) for row in rows]
-    headers = ["Snap", "Situation", "Personnel", "Gain", "Next", "Fallback", "Result"]
+    headers = ["Snap", "Situation", "Personnel", "Called", "Gain", "Next", "Fallback", "Result"]
     widths = {
         header: max(len(header), *(len(record[header]) for record in summary_rows))
         for header in headers

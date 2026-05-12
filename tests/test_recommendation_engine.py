@@ -61,6 +61,7 @@ class RecommendationEngineTests(unittest.TestCase):
     ) -> list[dict[str, object]]:
         intent = str(kwargs.pop("intent", "balanced"))
         tendencies = kwargs.pop("tendencies", None)
+        drive_memory = kwargs.pop("drive_memory", None)
         situation = build_situation(
             down=kwargs.pop("down", 1),
             distance=kwargs.pop("distance", 10),
@@ -80,6 +81,7 @@ class RecommendationEngineTests(unittest.TestCase):
             top_n=10,
             intent=intent,
             tendencies=tendencies,
+            drive_memory=drive_memory,
         )
 
     def score(self, play: dict[str, object], **kwargs: object) -> dict[str, object]:
@@ -123,6 +125,51 @@ class RecommendationEngineTests(unittest.TestCase):
             distance=2,
         )
         self.assertEqual(ids(recommendations)[:2], ["exact", "early"])
+
+    def test_drive_memory_penalizes_repeated_pass_concept(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="stick", pass_concept="stick", tags="quick_game"),
+                make_play(play_id="mesh", pass_concept="mesh", tags="quick_game;man_beater"),
+            ],
+            down=2,
+            distance=5,
+            field_zone="midfield",
+            drive_memory={"recent_main_concepts": ["stick"], "recent_pass_concepts": ["stick"]},
+        )
+
+        stick = next(play for play in recommendations if play["play_id"] == "stick")
+        self.assertTrue(any("drive memory: repeated" in reason for reason in stick["reasons"]))
+
+    def test_drive_memory_boosts_play_action_after_strong_run(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="pa", pass_concept="flood", play_action="true", tags="play_action;play_action_shot"),
+                make_play(play_id="quick", pass_concept="stick", tags="quick_game"),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            drive_memory={"play_action_boost_window": 2, "previous_run_like_gain": 7},
+        )
+
+        play_action = next(play for play in recommendations if play["play_id"] == "pa")
+        self.assertTrue(any("PA boosted after successful run" in reason for reason in play_action["reasons"]))
+
+    def test_drive_memory_does_not_boost_play_action_after_short_run(self) -> None:
+        recommendations = self.recommend(
+            [
+                make_play(play_id="pa", pass_concept="flood", play_action="true", tags="play_action;play_action_shot"),
+                make_play(play_id="quick", pass_concept="stick", tags="quick_game"),
+            ],
+            down=1,
+            distance=10,
+            field_zone="midfield",
+            drive_memory={"play_action_boost_window": 0, "previous_run_like_gain": 2},
+        )
+
+        play_action = next(play for play in recommendations if play["play_id"] == "pa")
+        self.assertFalse(any("PA boosted after successful run" in reason for reason in play_action["reasons"]))
 
     def test_fourth_short_penalizes_deep_shot(self) -> None:
         recommendations = self.recommend(

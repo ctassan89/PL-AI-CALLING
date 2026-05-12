@@ -41,8 +41,13 @@ def sample_rows() -> list[dict[str, str]]:
             "opponent": "Rhinos",
             "matched_tendency_bucket": "opponent=rhinos, down=1, distance=medium, field_zone=open_field, personnel=11",
             "tendency_fallback_used": "no",
-            "recommendation_blocks": "Run options: IZ Insert DOT, Outside Zone Toss TREY | RPO options: IZ Insert RPO Quick Out DOT, GT Counter RPO Double Slant TOP | Pass options: Stick TREY, Hitch DOT",
+            "recommendation_blocks": "Run options: IZ Insert DOT (59.8), Outside Zone Toss TREY (47.3) | RPO options: IZ Insert RPO Quick Out DOT (93.2), GT Counter RPO Double Slant TOP (83.3) | Pass options: Stick TREY (61.0), Hitch DOT (57.7)",
             "top_recommendations": "1. IZ Insert DOT (59.8); 2. Stick TREY (55.1)",
+            "called_play_name": "IZ Insert RPO Quick Out DOT",
+            "called_block": "RPO options",
+            "called_rank": "3",
+            "called_from_recommendations": "yes",
+            "play_success": "yes",
             "yards_input": "4",
             "next_down": "2",
             "next_distance": "6",
@@ -110,6 +115,7 @@ def test_compact_summary_row_formats_core_fields() -> None:
     record = view_session_log.compact_summary_row(sample_rows()[0])
 
     assert record["Situation"] == "1st & 10 own 10"
+    assert record["Called"] == "IZ Insert RPO Quick..."
     assert record["Gain"] == "+4"
     assert record["Next"] == "2nd & 6 own 14"
     assert record["Fallback"] == "no"
@@ -142,6 +148,7 @@ def test_viewer_cli_snap_and_compact_render_cleanly(tmp_path: Path) -> None:
 
     assert compact.returncode == 0
     assert "Snap | Situation" in compact.stdout
+    assert "Called" in compact.stdout
     assert "1st & 10 own 10" in compact.stdout
     assert "nan" not in compact.stdout.lower()
 
@@ -150,6 +157,9 @@ def test_viewer_cli_snap_and_compact_render_cleanly(tmp_path: Path) -> None:
     assert "Run options:" in snap_one.stdout
     assert "1. IZ Insert DOT" in snap_one.stdout
     assert "2. Outside Zone Toss TREY" in snap_one.stdout
+    assert "Called:" in snap_one.stdout
+    assert "- play: IZ Insert RPO Quick Out DOT" in snap_one.stdout
+    assert "- rank: 3" in snap_one.stdout
     assert "gain +4 -> 2nd & 6 own 14" in snap_one.stdout
     assert "Snap 2" not in snap_one.stdout
     assert "nan" not in snap_one.stdout.lower()

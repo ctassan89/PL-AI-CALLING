@@ -13,6 +13,7 @@ import pandas as pd
 
 Situation = Mapping[str, Any]
 TendencySnapshot = Mapping[str, Mapping[str, float]]
+DriveMemory = Mapping[str, Any]
 
 
 class Recommendation(TypedDict, total=False):
@@ -2369,6 +2370,65 @@ def rerank_recommendations(
     return final_ranked
 
 
+def apply_drive_memory_adjustments(
+    play: pd.Series,
+    drive_memory: DriveMemory | None,
+) -> tuple[float, list[str]]:
+    """Apply lightweight sequencing adjustments for the live session only."""
+    if drive_memory is None:
+        return 0.0, []
+
+    tags = infer_play_tags(play)
+    play_type = normalize_text(play_series_value(play, "play_type"))
+    pass_concept = normalize_text(play_series_value(play, "pass_concept"))
+    run_scheme = normalize_text(play_series_value(play, "run_scheme"))
+    rpo_tag = normalize_text(play_series_value(play, "rpo_tag"))
+    main_concept = concept_group_key(play)
+    recent_concepts = [normalize_text(value) for value in drive_memory.get("recent_main_concepts", [])]
+    recent_pass_concepts = [normalize_text(value) for value in drive_memory.get("recent_pass_concepts", [])]
+    recent_run_schemes = [normalize_text(value) for value in drive_memory.get("recent_run_schemes", [])]
+    recent_rpo_tags = [normalize_text(value) for value in drive_memory.get("recent_rpo_tags", [])]
+    pa_window = int(drive_memory.get("play_action_boost_window", 0) or 0)
+
+    adjustment = 0.0
+    reasons: list[str] = []
+
+    if main_concept and recent_concepts[:1] and main_concept == recent_concepts[0]:
+        adjustment += add_reason(reasons, -4.0, "drive memory: repeated concept from previous snap")
+    elif main_concept and main_concept in recent_concepts[1:3]:
+        adjustment += add_reason(reasons, -2.0, "drive memory: repeated concept in recent sequence")
+
+    if play_type == "pass" and pass_concept:
+        if recent_pass_concepts[:1] and pass_concept == recent_pass_concepts[0]:
+            adjustment += add_reason(reasons, -3.0, "drive memory: repeated pass concept from previous snap")
+        elif pass_concept in recent_pass_concepts[1:3]:
+            adjustment += add_reason(reasons, -2.0, "drive memory: repeated pass concept in recent sequence")
+    elif play_type == "run" and run_scheme:
+        if recent_run_schemes[:1] and run_scheme == recent_run_schemes[0]:
+            adjustment += add_reason(reasons, -3.0, "drive memory: repeated run scheme from previous snap")
+        elif run_scheme in recent_run_schemes[1:3]:
+            adjustment += add_reason(reasons, -2.0, "drive memory: repeated run scheme in recent sequence")
+    elif play_type == "rpo":
+        if rpo_tag and recent_rpo_tags[:1] and rpo_tag == recent_rpo_tags[0]:
+            adjustment += add_reason(reasons, -3.0, "drive memory: repeated RPO tag from previous snap")
+        elif rpo_tag and rpo_tag in recent_rpo_tags[1:3]:
+            adjustment += add_reason(reasons, -2.0, "drive memory: repeated RPO tag in recent sequence")
+
+    if pa_window > 0 and (
+        "play_action" in tags
+        or "play_action_shot" in tags
+        or normalize_text(play_series_value(play, "play_family")) == "boot"
+        or pass_concept == "bootleg"
+    ):
+        previous_gain = int(drive_memory.get("previous_run_like_gain", 0) or 0)
+        if previous_gain >= 7:
+            adjustment += add_reason(reasons, 4.0, "drive memory: PA boosted after successful run")
+        elif previous_gain >= 4:
+            adjustment += add_reason(reasons, 2.0, "drive memory: PA lightly boosted after solid run")
+
+    return clamp(adjustment, -8.0, 6.0), reasons
+
+
 def recommend_plays(
     playbook: pd.DataFrame,
     situation: Situation,
@@ -2379,6 +2439,7 @@ def recommend_plays(
     limit: int | None = None,
     max_per_concept: int | None = 3,
     intent: str = "balanced",
+    drive_memory: DriveMemory | None = None,
 ) -> list[Recommendation]:
     """Score a playbook and return ranked recommendations."""
     if limit is not None:
@@ -2401,6 +2462,10 @@ def recommend_plays(
             situation,
             tendencies,
         )
+        drive_memory_adjustment, drive_memory_reasons = apply_drive_memory_adjustments(
+            play,
+            drive_memory,
+        )
         final_score = clamp(
             float(recommendation["base_score"])
             + tendency_adjustment
@@ -2409,8 +2474,10 @@ def recommend_plays(
             0.0,
             100.0,
         )
+        final_score = clamp(final_score + drive_memory_adjustment, 0.0, 100.0)
         recommendation["tendency_adjustment"] = tendency_adjustment
         recommendation["contextual_adjustment"] = contextual_adjustment
+        recommendation["drive_memory_adjustment"] = drive_memory_adjustment
         recommendation["pre_rerank_score"] = final_score
         recommendation["score"] = final_score
         recommendation["used_tendencies"] = tendencies is not None
@@ -2419,6 +2486,7 @@ def recommend_plays(
             *tendency_reasons,
             *intent_reasons,
             *contextual_reasons,
+            *drive_memory_reasons,
         ]
         recommendation["concept_group"] = str(recommendation["main_concept_key"])
         recommendation["variant_group"] = concept_variant_key(play)

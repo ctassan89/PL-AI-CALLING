@@ -14,6 +14,8 @@ python3 scripts/playcaller_session.py \
 General checks for every scenario:
 
 - Recommendation blocks should match the situation tag.
+- Displayed recommendation numbers should be global across blocks.
+- Called-play input should use `call ... gain ...`, not numeric-only yards.
 - Personnel entered by the user should hard-filter the recommendations.
 - Opponent tendency usage should print clearly, including fallback messaging when exact buckets are missing.
 - Screens should only rise when pressure/aggression supports them.
@@ -27,9 +29,9 @@ Inputs:
 
 ```text
 first and 10 own 25 cover3 even box 6 personnel 11
-4
-3
-6
+call 1 gain 4
+call 3 gain 3
+call Stick TREY gain 6
 q
 ```
 
@@ -53,9 +55,9 @@ Inputs:
 
 ```text
 first and 10 own 30 cover3 even box 6 personnel 10
-5
-2
-4
+call 1 gain 5
+call 3 gain 2
+call 4 gain 4
 q
 ```
 
@@ -78,9 +80,9 @@ Inputs:
 
 ```text
 first and 10 own 35 cover3 even box 6 personnel 11
-4
+call 1 gain 4
 cover1 box 6
-5
+call Stick TREY gain 5
 q
 ```
 
@@ -103,7 +105,7 @@ Inputs:
 
 ```text
 second and 2 own 42 odd_tite cover1 box 8 personnel 12
-1
+call 2 gain 1
 third and 1 own 43 odd_tite cover1 box 8 personnel 12
 q
 ```
@@ -127,8 +129,8 @@ Inputs:
 
 ```text
 first and 10 own 28 cover1 even box 6 personnel 11
-4
-3
+call 3 gain 4
+call Stick TREY gain 3
 q
 ```
 
@@ -151,9 +153,9 @@ Inputs:
 
 ```text
 first and 10 own 25 cover3 even box 6 personnel 10
-5
-2
-7
+call 1 gain 5
+call 3 gain 2
+call 5 gain 7
 q
 ```
 
@@ -176,7 +178,7 @@ Inputs:
 
 ```text
 second and 8 own 33 cover1 nickel blitz box 6 personnel 10
-0
+call 2 gain 0
 q
 ```
 
@@ -199,8 +201,8 @@ Inputs:
 
 ```text
 first and 10 own 40 bear cover1 box 8 personnel 11
-2
-2
+call 1 gain 2
+call 2 gain 2
 q
 ```
 
@@ -223,8 +225,8 @@ Inputs:
 
 ```text
 first and 10 opp 18 cover1 odd_tite box 7 personnel 11
-6
-3
+call 2 gain 6
+call 4 gain 3
 q
 ```
 
@@ -247,7 +249,7 @@ Inputs:
 
 ```text
 second and 1 opp 3 cover1 bear box 8 personnel 12
-1
+call 1 gain 1
 third and 1 opp 2 cover1 bear box 8 personnel 12
 q
 ```
@@ -271,7 +273,7 @@ Inputs:
 
 ```text
 third and 3 own 44 cover1 even box 6 personnel 11
-0
+call 1 gain 0
 third and 8 own 44 cover3 nickel blitz box 6 personnel 11
 q
 ```
