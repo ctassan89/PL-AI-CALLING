@@ -91,6 +91,34 @@ Session behavior:
 - Defensive context persists until changed.
 - The session uses the same `build_situation(...)` and `recommend_plays(...)` functions as `scripts/suggest_play.py`.
 
+## Manual QA And Logging
+
+Manual sequential-drive smoke tests live in [tests/manual_drive_tests.md](/home/carlo/PL-AI-CALLING/PL-AI-CALLING/tests/manual_drive_tests.md).
+
+Run the tendency coverage audit:
+
+```bash
+python3 scripts/audit_tendencies.py --opponent Rhinos
+```
+
+Run the sequential session with an optional CSV log:
+
+```bash
+python3 scripts/playcaller_session.py \
+  --opponent Rhinos \
+  --opponent-tendencies-path data/opponent_tendencies.csv \
+  --top-n 5 \
+  --save-log logs/rhinos_drive_01.csv
+```
+
+## Viewing Session Logs
+
+```bash
+python3 scripts/view_session_log.py logs/test_drive_01.csv
+python3 scripts/view_session_log.py logs/test_drive_01.csv --compact
+python3 scripts/view_session_log.py logs/test_drive_01.csv --snap 3
+```
+
 ## Data Files
 
 - `data/playbook.csv`: structured offensive inventory used for recommendations

@@ -200,6 +200,120 @@ def test_session_touchdown_stops_before_rendering_next_block(tmp_path: Path) -> 
     assert result.stdout.count("Drive ended: touchdown") == 1
 
 
+def test_session_save_log_creates_csv_with_completed_numeric_snap(tmp_path: Path) -> None:
+    """Saving a log should create one row per numeric snap with the expected headers."""
+    playbook_path = tmp_path / "playbook.csv"
+    log_path = tmp_path / "logs" / "drive.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TRIPS")],
+    )
+
+    result = run_session(
+        playbook_path,
+        "primo e 10 own 25 cover3 even box 6 personnel 10\n3\nq\n",
+        "--top-n",
+        "2",
+        "--save-log",
+        str(log_path),
+    )
+
+    assert result.returncode == 0
+    assert log_path.exists()
+    with log_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(playcaller_session.SESSION_LOG_COLUMNS) <= set(row)
+    assert row["snap_number"] == "1"
+    assert row["down"] == "1"
+    assert row["distance"] == "10"
+    assert row["field_position_label"] == "own 25"
+    assert row["yards_input"] == "3"
+    assert row["next_down"] == "2"
+    assert row["next_distance"] == "7"
+    assert row["next_yardline"] == "28"
+    assert row["drive_result"] == ""
+
+
+def test_session_save_log_skips_pure_defense_updates(tmp_path: Path) -> None:
+    """Defense-only context updates should not produce duplicate completed snap rows."""
+    playbook_path = tmp_path / "playbook.csv"
+    log_path = tmp_path / "logs" / "drive.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TRIPS")],
+    )
+
+    result = run_session(
+        playbook_path,
+        "primo e 10 own 25 cover3 even box 6 personnel 10\ncover1 nickel blitz box 6\n4\nq\n",
+        "--top-n",
+        "2",
+        "--save-log",
+        str(log_path),
+    )
+
+    assert result.returncode == 0
+    with log_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["coverage"] == "cover1"
+    assert rows[0]["pressure"] == "nickel_blitz"
+    assert rows[0]["yards_input"] == "4"
+
+
+def test_session_touchdown_is_logged_without_extra_recommendation_row(tmp_path: Path) -> None:
+    """The final touchdown snap should be logged once and end the drive cleanly."""
+    playbook_path = tmp_path / "playbook.csv"
+    log_path = tmp_path / "logs" / "drive.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TRIPS", personnel="11")],
+    )
+
+    result = run_session(
+        playbook_path,
+        "first and 1 opp 1 personnel 11\n1\n",
+        "--top-n",
+        "2",
+        "--save-log",
+        str(log_path),
+    )
+
+    assert result.returncode == 0
+    assert "Current situation: 1st & 10, opp 0, goal_line" not in result.stdout
+    with log_path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["drive_result"] == "touchdown"
+    assert rows[0]["next_yardline"] == "100"
+
+
+def test_session_without_save_log_does_not_create_file(tmp_path: Path) -> None:
+    """No log path should preserve the current no-file behavior."""
+    playbook_path = tmp_path / "playbook.csv"
+    log_path = tmp_path / "logs" / "drive.csv"
+    write_csv(
+        playbook_path,
+        list(PLAYBOOK_COLUMNS),
+        [make_play("stick", "Stick TRIPS")],
+    )
+
+    result = run_session(
+        playbook_path,
+        "primo e 10 own 25\n3\nq\n",
+        "--top-n",
+        "1",
+    )
+
+    assert result.returncode == 0
+    assert not log_path.exists()
+
+
 def test_session_first_and_ten_uses_run_rpo_pass_blocks(tmp_path: Path) -> None:
     """1st-and-10 should print run, RPO, and pass blocks."""
     playbook_path = tmp_path / "playbook.csv"

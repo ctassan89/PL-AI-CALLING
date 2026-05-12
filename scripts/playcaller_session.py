@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+from datetime import datetime
 from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
@@ -40,6 +42,33 @@ from recommendation.situation_parser import (
 
 TendencySnapshot = Mapping[str, Mapping[str, float]]
 
+SESSION_LOG_COLUMNS = [
+    "drive_id",
+    "snap_number",
+    "down",
+    "distance",
+    "yardline",
+    "field_position_label",
+    "field_zone",
+    "personnel",
+    "front",
+    "coverage",
+    "pressure",
+    "box",
+    "opponent",
+    "opponent_tendencies_used",
+    "matched_tendency_bucket",
+    "tendency_fallback_used",
+    "top_recommendations",
+    "displayed_recommendations",
+    "recommendation_blocks",
+    "yards_input",
+    "next_down",
+    "next_distance",
+    "next_yardline",
+    "drive_result",
+]
+
 
 @dataclass(frozen=True)
 class BlockSpec:
@@ -68,6 +97,34 @@ class DriveContext:
         if self.previous_gain is None:
             return {}
         return {"previous_gain": self.previous_gain}
+
+
+@dataclass
+class SessionLogWriter:
+    """Write one CSV row per completed recommendation step."""
+
+    path: Path
+    drive_id: str
+
+    def __post_init__(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("w", newline="")
+        self._writer = csv.DictWriter(self._handle, fieldnames=SESSION_LOG_COLUMNS)
+        self._writer.writeheader()
+        self._handle.flush()
+
+    def write_row(self, row: Mapping[str, object]) -> None:
+        """Write and flush a single normalized log row."""
+        serialized = {
+            column: normalize_text_for_log(row.get(column, ""))
+            for column in SESSION_LOG_COLUMNS
+        }
+        self._writer.writerow(serialized)
+        self._handle.flush()
+
+    def close(self) -> None:
+        """Close the underlying log file cleanly."""
+        self._handle.close()
 
 
 def format_matched_tendency_bucket(
@@ -127,6 +184,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print detailed scoring reasons for each recommendation.",
     )
+    parser.add_argument(
+        "--save-log",
+        dest="save_log",
+        help="Optional CSV path for one row per completed recommendation step.",
+    )
     return parser.parse_args()
 
 
@@ -148,6 +210,20 @@ def normalize_text(value: object) -> str:
     if not text or text.lower() == "nan":
         return ""
     return text
+
+
+def normalize_text_for_log(value: object) -> str:
+    """Normalize a scalar into a stable CSV-safe text field."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def csv_flag(value: bool) -> str:
+    """Serialize a boolean to a simple yes/no token."""
+    return "yes" if value else "no"
 
 
 def normalize_tendency_distance_bucket_for_session(state: GameState) -> str:
@@ -271,6 +347,104 @@ def print_tendency_status(
     if pressure_snapshot != "none":
         print(f"- pressure: {pressure_snapshot}")
     print()
+
+
+def serialize_top_recommendations(
+    recommendation_groups: list[tuple[str, list[Mapping[str, object]]]],
+    *,
+    limit: int,
+) -> str:
+    """Serialize the overall top recommendations into one compact log field."""
+    flattened: list[Mapping[str, object]] = []
+    seen_play_ids: set[str] = set()
+    for _, recommendations in recommendation_groups:
+        for play in recommendations:
+            play_id = str(play.get("play_id", ""))
+            if play_id and play_id in seen_play_ids:
+                continue
+            if play_id:
+                seen_play_ids.add(play_id)
+            flattened.append(play)
+            if len(flattened) >= limit:
+                break
+        if len(flattened) >= limit:
+            break
+    return "; ".join(
+        f"{index}. {play['play_name']} ({float(play['score']):.1f})"
+        for index, play in enumerate(flattened, start=1)
+    )
+
+
+def serialize_recommendation_blocks(
+    recommendation_groups: list[tuple[str, list[Mapping[str, object]]]],
+) -> str:
+    """Serialize each printed recommendation block into one compact string."""
+    blocks: list[str] = []
+    for heading, recommendations in recommendation_groups:
+        title = heading.rstrip(":")
+        names = ", ".join(
+            f"{play['play_name']} ({float(play['score']):.1f})"
+            for play in recommendations
+        )
+        if names:
+            blocks.append(f"{title}: {names}")
+    return " | ".join(blocks)
+
+
+def build_session_log_row(
+    *,
+    drive_id: str,
+    snap_number: int,
+    state: GameState,
+    defense_state: DefenseState,
+    args: argparse.Namespace,
+    tendency_metadata: dict[str, object] | None,
+    recommendation_groups: list[tuple[str, list[Mapping[str, object]]]],
+    tendencies: TendencySnapshot | None,
+) -> dict[str, object]:
+    """Build the pending log row for the current recommendation step."""
+    matched_bucket = ""
+    fallback_used = False
+    if tendency_metadata is not None:
+        situation = tendency_metadata.get("situation")
+        matched_keys = tendency_metadata.get("matched_keys")
+        if isinstance(situation, Mapping) and isinstance(matched_keys, tuple):
+            matched_bucket = format_matched_tendency_bucket(situation, matched_keys)
+        fallback_used = bool(tendency_metadata.get("fallback_used"))
+    return {
+        "drive_id": drive_id,
+        "snap_number": snap_number,
+        "down": state.down,
+        "distance": state.distance,
+        "yardline": state.field_position,
+        "field_position_label": state.display_yardline(),
+        "field_zone": state.field_zone(),
+        "personnel": normalize_text(defense_state.personnel),
+        "front": normalize_text(defense_state.front_id),
+        "coverage": normalize_text(defense_state.coverage_id),
+        "pressure": normalize_text(defense_state.pressure_id),
+        "box": "" if defense_state.box_count is None else defense_state.box_count,
+        "opponent": normalize_text(args.opponent),
+        "opponent_tendencies_used": csv_flag(tendencies is not None),
+        "matched_tendency_bucket": matched_bucket,
+        "tendency_fallback_used": csv_flag(fallback_used),
+        # TODO: top_recommendations reflects the displayed recommendation mix today.
+        # Keep it stable for backward compatibility and expose the same view explicitly.
+        "top_recommendations": serialize_top_recommendations(
+            recommendation_groups,
+            limit=args.top_n,
+        ),
+        "displayed_recommendations": serialize_top_recommendations(
+            recommendation_groups,
+            limit=args.top_n,
+        ),
+        "recommendation_blocks": serialize_recommendation_blocks(recommendation_groups),
+        "yards_input": "",
+        "next_down": "",
+        "next_distance": "",
+        "next_yardline": "",
+        "drive_result": "",
+    }
 
 
 def build_recommendation_groups(
@@ -616,7 +790,7 @@ def filter_candidates_for_block(
     )
 
 
-def print_recommendations_for_state(
+def build_recommendation_payload(
     playbook: pd.DataFrame,
     state: GameState,
     defense_state: DefenseState,
@@ -624,8 +798,8 @@ def print_recommendations_for_state(
     args: argparse.Namespace,
     analyzer: OpponentTendencyAnalyzer | None,
     drive_context: DriveContext | None = None,
-) -> None:
-    """Build the shared situation payload and print top recommendations."""
+) -> dict[str, object]:
+    """Build the shared recommendation payload for output and logging."""
     situation = build_situation(
         down=state.down,
         distance=state.distance,
@@ -649,12 +823,29 @@ def print_recommendations_for_state(
         block_size=getattr(args, "block_size", args.top_n),
         intent=args.intent,
     )
+    return {
+        "situation": situation,
+        "tendencies": tendencies,
+        "tendency_reason": tendency_reason,
+        "tendency_metadata": tendency_metadata,
+        "recommendation_groups": recommendation_groups,
+    }
+
+
+def print_recommendation_payload(
+    payload: Mapping[str, object],
+    *,
+    args: argparse.Namespace,
+) -> None:
+    """Print recommendations from a precomputed payload."""
     print_tendency_status(
         args=args,
-        tendencies=tendencies,
-        reason=tendency_reason,
-        metadata=tendency_metadata,
+        tendencies=payload["tendencies"],
+        reason=payload["tendency_reason"],
+        metadata=payload["tendency_metadata"],
     )
+    recommendation_groups = payload["recommendation_groups"]
+    assert isinstance(recommendation_groups, list)
     for heading, recommendations in recommendation_groups:
         print(heading)
         for index, play in enumerate(recommendations[: args.top_n], start=1):
@@ -663,6 +854,27 @@ def print_recommendations_for_state(
                 reasons = "; ".join(play["reasons"]) if play["reasons"] else "no positive matches"
                 print(f"   reasons: {reasons}")
         print()
+
+
+def print_recommendations_for_state(
+    playbook: pd.DataFrame,
+    state: GameState,
+    defense_state: DefenseState,
+    *,
+    args: argparse.Namespace,
+    analyzer: OpponentTendencyAnalyzer | None,
+    drive_context: DriveContext | None = None,
+) -> None:
+    """Build and print recommendations using the historical public signature."""
+    payload = build_recommendation_payload(
+        playbook,
+        state,
+        defense_state,
+        args=args,
+        analyzer=analyzer,
+        drive_context=drive_context,
+    )
+    print_recommendation_payload(payload, args=args)
 
 
 def prompt_initial_state() -> tuple[GameState, DefenseState]:
@@ -694,6 +906,32 @@ def apply_session_update(
     return state, defense_state
 
 
+def create_session_log_writer(args: argparse.Namespace) -> SessionLogWriter | None:
+    """Create the optional session log writer."""
+    if not args.save_log:
+        return None
+    drive_id = datetime.now().strftime("drive_%Y%m%d_%H%M%S")
+    return SessionLogWriter(Path(args.save_log), drive_id)
+
+
+def complete_pending_log_row(
+    pending_row: dict[str, object] | None,
+    raw_input: str,
+    state: GameState,
+) -> dict[str, object] | None:
+    """Update a pending log row once a numeric yardage input is processed."""
+    if pending_row is None:
+        return None
+    row = dict(pending_row)
+    row["yards_input"] = raw_input
+    row["next_down"] = state.down
+    row["next_distance"] = state.distance
+    row["next_yardline"] = state.field_position
+    if state.status != "active":
+        row["drive_result"] = state.status
+    return row
+
+
 def main() -> None:
     """Run an interactive sequence of recommendations and updates."""
     args = parse_args()
@@ -701,40 +939,73 @@ def main() -> None:
     analyzer, _ = load_tendency_analyzer(args)
     state, defense_state = prompt_initial_state()
     drive_context = DriveContext()
+    log_writer = create_session_log_writer(args)
+    snap_number = 1
+    pending_log_row: dict[str, object] | None = None
 
-    while True:
-        print_situation(state, defense_state)
-        print_recommendations_for_state(
-            playbook,
-            state,
-            defense_state,
-            args=args,
-            analyzer=analyzer,
-            drive_context=drive_context,
-        )
-
-        if state.status != "active":
-            print(f"Drive ended: {state.status}")
-            return
-
-        raw_update = input("Yards gained/lost or defense update: ").strip()
-        if raw_update.lower() in {"q", "quit", "exit"}:
-            return
-
-        try:
-            state, defense_state = apply_session_update(
-                raw_update,
+    try:
+        while True:
+            print_situation(state, defense_state)
+            payload = build_recommendation_payload(
+                playbook,
                 state,
                 defense_state,
-                drive_context,
+                args=args,
+                analyzer=analyzer,
+                drive_context=drive_context,
             )
-        except ValueError as exc:
-            print(exc)
-            continue
+            print_recommendation_payload(payload, args=args)
 
-        if state.status != "active":
-            print(f"Drive ended: {state.status}")
-            return
+            if log_writer is not None:
+                pending_log_row = build_session_log_row(
+                    drive_id=log_writer.drive_id,
+                    snap_number=snap_number,
+                    state=state,
+                    defense_state=defense_state,
+                    args=args,
+                    tendency_metadata=payload["tendency_metadata"],
+                    recommendation_groups=payload["recommendation_groups"],
+                    tendencies=payload["tendencies"],
+                )
+
+            if state.status != "active":
+                print(f"Drive ended: {state.status}")
+                return
+
+            raw_update = input("Yards gained/lost or defense update: ").strip()
+            if raw_update.lower() in {"q", "quit", "exit"}:
+                return
+
+            try:
+                state, defense_state = apply_session_update(
+                    raw_update,
+                    state,
+                    defense_state,
+                    drive_context,
+                )
+            except ValueError as exc:
+                print(exc)
+                continue
+
+            try:
+                gain = int(raw_update)
+            except ValueError:
+                pending_log_row = None
+                continue
+
+            if log_writer is not None:
+                completed_row = complete_pending_log_row(pending_log_row, str(gain), state)
+                if completed_row is not None:
+                    log_writer.write_row(completed_row)
+            pending_log_row = None
+            snap_number += 1
+
+            if state.status != "active":
+                print(f"Drive ended: {state.status}")
+                return
+    finally:
+        if log_writer is not None:
+            log_writer.close()
 
 
 if __name__ == "__main__":
